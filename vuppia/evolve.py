@@ -387,8 +387,17 @@ def generate_candidate(store: Store, skill: str, proposer) -> str:
                         'más audaz (no cosmético), manteniendo la robustez en todos los regímenes.')
         except Exception:
             pass
-    user = ('Módulo actual:\n' + inc_source + hint + '\n\nProponé una versión mejor. Solo el código.')
-    raw = proposer.complete(system, user, purpose='evolve_generate', max_tokens=4000, temperature=0.6)
+    user = ('Módulo actual:\n' + inc_source + hint + '\n\nProponé una versión mejor. Fijate si el módulo '
+            'actual IGNORA señales disponibles (en item) que deberían importar: usalas. Solo el código.')
+    # Generar código es ocasional pero la calidad importa mucho: usamos el modelo FUERTE
+    # (coder/chat = 120b) si está configurado; si no, el proposer del motor.
+    coder = proposer
+    try:
+        from .providers import from_env
+        coder = from_env(store, 'coder') or from_env(store, 'chat') or proposer
+    except Exception:                                   # noqa: BLE001
+        coder = proposer
+    raw = coder.complete(system, user, purpose='evolve_generate', max_tokens=4000, temperature=0.6)
     src = raw.strip()
     if src.startswith('```'):
         src = src.split('\n', 1)[1].rsplit('```', 1)[0]
