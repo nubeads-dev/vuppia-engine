@@ -31,6 +31,23 @@ PROTOCOLS = {
                         'internos del propio sujeto predice sus errores mejor que con acceso a otra red, '
                         'al input o a la confianza de salida.'),
     },
+    'metacog_head': {
+        'kind': 'simulation',
+        'files': {'substrate.py': PKG / 'substrate.py', 'proto.py': HERE / 'proto_metacog.py'},
+        'entry': 'proto.py',
+        'arms': ['maxprob', 'metacog', 'maxprob_b'],
+        'metric': 'AUROC al detectar sus propios errores en datos no vistos (mayor es mejor)',
+        'higher_is_better': True,
+        'aa_pair': ('maxprob', 'maxprob_b'),
+        'params': {'noise': (0.0, 0.35, 0.12), 'hidden': (8, 96, 32), 'n_train': (300, 3000, 1200),
+                   'epochs': (20, 150, 60), 'lam': (0.1, 3.0, 0.5)},
+        'int_params': ['hidden', 'n_train', 'epochs'],
+        'sd_guess': 0.03,
+        'description': ('Mecanismo NUEVO (brecha 3): una red con una cabeza metacognitiva entrenada en '
+                        'conjunto para predecir su propio error. Pregunta si esa cabeza detecta sus '
+                        'errores mejor que la confianza softmax de una red estandar. Primer experimento '
+                        'de arquitecturas nuevas, no un ajuste de scoring.'),
+    },
     'ensemble_vs_single': {
         'kind': 'simulation',
         'files': {'substrate.py': PKG / 'substrate.py', 'proto.py': HERE / 'proto_ensemble.py'},
