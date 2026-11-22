@@ -150,6 +150,10 @@ class Provider:
 # devuelven x-ratelimit-* en cada respuesta; los guardamos para mostrarlos en el panel.
 _LAST_RL: dict = {}
 
+# Último finish_reason visto (por proceso): 'stop' = terminó, 'length' = la cortó el tope.
+# Lo usa el chat para continuar una respuesta larga en varias llamadas chicas.
+_LAST_FINISH: dict = {'reason': None}
+
 
 def _capture_rl(hdrs):
     try:
@@ -274,7 +278,9 @@ class _OAICompat(Provider):
         headers = {'Authorization': 'Bearer ' + key}
         headers.update(self.EXTRA_HEADERS)
         data = _post(self.API_URL, body, headers)
-        text = (data.get('choices') or [{}])[0].get('message', {}).get('content') or ''
+        ch = (data.get('choices') or [{}])[0]
+        text = ch.get('message', {}).get('content') or ''
+        _LAST_FINISH['reason'] = ch.get('finish_reason')
         u = data.get('usage', {})
         return text, u.get('prompt_tokens'), u.get('completion_tokens')
 

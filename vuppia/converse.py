@@ -295,9 +295,32 @@ def _llm_grounded(provider, question, state, rel) -> str:
     user = ('Pregunta: ' + question + '\n<datos_reales_de_sofia>\n' +
             json.dumps(facts, ensure_ascii=False)[:9000] + '\n</datos_reales_de_sofia>')
     try:
-        return provider.complete(system, user, purpose='converse', max_tokens=8000)
+        return _answer_in_chunks(provider, system, user)
     except Exception as exc:                          # noqa: BLE001
         return _structured_answer('status', state) + f'\n(No pude usar el modelo: {str(exc)[:80]})'
+
+
+def _answer_in_chunks(provider, system, user, chunk=3500, max_rounds=3):
+    """Responde completo pero en VARIAS llamadas chicas: cada una entra en el tope por
+    minuto del tier gratis (p. ej. 8000 tok/min de Groq) y, si la respuesta queda cortada
+    (finish_reason='length'), hace otra que continúa sin repetir. El Retry-After del provider
+    espacia las llamadas si toca el límite, así no corta con 429."""
+    from . import providers
+    parts = []
+    base = user
+    for _ in range(max_rounds):
+        txt = provider.complete(system, base, purpose='converse', max_tokens=chunk)
+        txt = (txt or '').strip()
+        if txt:
+            parts.append(txt)
+        if providers._LAST_FINISH.get('reason') != 'length':
+            break
+        sofar = '\n'.join(parts)
+        tail = sofar[-1500:]
+        base = (user + '\n\n<ya_escribiste>\n' + tail + '\n</ya_escribiste>\n'
+                'Continuá EXACTAMENTE desde donde cortaste, sin repetir ni volver a saludar. '
+                'Si ya terminaste la idea, cerrá en una frase.')
+    return '\n'.join(parts).strip() or '(sin respuesta)'
 
 
 def _compose(answer, done, proposed, needs) -> str:
