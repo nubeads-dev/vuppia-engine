@@ -403,11 +403,11 @@ def generate_candidate(store: Store, skill: str, proposer) -> str:
         coder = None
     coder = coder or proposer
     try:
-        raw = coder.complete(system, user, purpose='evolve_generate', max_tokens=4000, temperature=0.6)
+        raw = coder.complete(system, user, purpose='evolve_generate', max_tokens=1500, temperature=0.6)
     except Exception:                                   # noqa: BLE001
         # Si el modelo fuerte está topado (cuota diaria) u otro error, caemos al del motor.
         if coder is not proposer:
-            raw = proposer.complete(system, user, purpose='evolve_generate', max_tokens=4000, temperature=0.6)
+            raw = proposer.complete(system, user, purpose='evolve_generate', max_tokens=1500, temperature=0.6)
         else:
             raise
     src = raw.strip()
