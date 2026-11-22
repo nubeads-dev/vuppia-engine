@@ -252,7 +252,7 @@ def _live_research(store, question, provider, fallback, done) -> str:
     researcher = provider or fallback
     try:
         from . import research
-        res = research.investigate(store, topic, online=True, sources=('openalex', 'crossref'),
+        res = research.investigate(store, topic, online=True, sources=('openalex', 'crossref', 'semanticscholar'),
                                    researcher=researcher, max_steps=2, per_source=4)
     except Exception as exc:                            # noqa: BLE001
         return ('No pude completar la búsqueda en vivo ahora (' + str(exc)[:70] + '). '

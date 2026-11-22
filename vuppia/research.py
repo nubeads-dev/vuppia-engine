@@ -26,9 +26,10 @@ MAX_REQUEST_BYTES = 750_000
 MAX_RESULTS = 8
 MAX_STEPS = 3
 MAX_QUESTION = 500
-ALLOWED_SOURCES = ('openalex', 'crossref', 'brave')
+ALLOWED_SOURCES = ('openalex', 'crossref', 'semanticscholar', 'brave')
 # Hosts que el fetcher tiene permitido tocar. Ninguna redirección puede salir de acá.
-ALLOWED_HOSTS = frozenset({'api.openalex.org', 'api.crossref.org', 'api.search.brave.com'})
+ALLOWED_HOSTS = frozenset({'api.openalex.org', 'api.crossref.org', 'api.semanticscholar.org',
+                           'api.search.brave.com'})
 USER_AGENT = 'VuppiaSofia-Research/3.5 (research; contact configured by operator)'
 
 
@@ -129,6 +130,34 @@ def crossref(query: str, limit: int, get: Callable = _get_json) -> list[dict]:
     return out
 
 
+def semanticscholar(query: str, limit: int, get: Callable = _get_json) -> list[dict]:
+    """Semantic Scholar (Graph API, sin key): cubre CS/IA/ML, incluidos preprints de arXiv.
+    Justo el campo de VUPPIA. Tiene límite de tasa agresivo; si responde 429, gather sigue
+    con las otras fuentes (el error queda registrado)."""
+    url = 'https://api.semanticscholar.org/graph/v1/paper/search?' + urllib.parse.urlencode({
+        'query': query, 'limit': min(limit, 10), 'fields': 'title,year,externalIds,url,abstract'
+    })
+    rows = get(url).get('data', [])
+    out = []
+    for p in rows[:limit] if isinstance(rows, list) else []:
+        if not isinstance(p, dict):
+            continue
+        ext = p.get('externalIds') or {}
+        doi = _safe_text(ext.get('DOI'), 180)
+        arxiv = _safe_text(ext.get('ArXiv'), 60)
+        if doi:
+            link = 'https://doi.org/' + urllib.parse.quote(doi, safe='/.:()-_')
+        elif arxiv:
+            link = 'https://arxiv.org/abs/' + urllib.parse.quote(arxiv, safe='/.:-_')
+        else:
+            link = _https_url(p.get('url'))
+        if link:
+            out.append({'provider': 'semanticscholar', 'title': _safe_text(p.get('title')),
+                        'url': link, 'year': p.get('year'),
+                        'snippet': _safe_text(p.get('abstract'), 600), 'query': query})
+    return out
+
+
 def brave(query: str, limit: int, get: Callable = _get_json) -> list[dict]:
     """Búsqueda web general, SOLO si BRAVE_SEARCH_API_KEY se configuró en el host."""
     key = os.getenv('BRAVE_SEARCH_API_KEY')
@@ -151,7 +180,7 @@ def brave(query: str, limit: int, get: Callable = _get_json) -> list[dict]:
     return out
 
 
-ADAPTERS = {'openalex': openalex, 'crossref': crossref, 'brave': brave}
+ADAPTERS = {'openalex': openalex, 'crossref': crossref, 'semanticscholar': semanticscholar, 'brave': brave}
 
 
 def gather(query: str, *, sources=('openalex', 'crossref'), per_source=4,
@@ -259,7 +288,7 @@ def _verify(provider, question: str, synthesis: dict, evidence: list[dict]) -> d
     return {'verdict': verdict, 'issues': clean_list('issues'), 'next_queries': clean_list('next_queries')}
 
 
-def investigate(store: Store, question: str, *, sources=('openalex', 'crossref'),
+def investigate(store: Store, question: str, *, sources=('openalex', 'crossref', 'semanticscholar'),
                 online=False, researcher=None, verifier=None,
                 max_steps=2, per_source=4, get: Callable = _get_json) -> dict:
     """Investiga con límites estrictos. Offline permite ensayar con un fetch simulado.
