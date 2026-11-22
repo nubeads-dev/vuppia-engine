@@ -67,6 +67,15 @@ def classify(text: str) -> str:
         return 'cmd_add'
     if has('consultá otra', 'consulta otra', 'contrastá', 'contrasta', 'otra ia', 'otras ia', 'segunda opinión'):
         return 'cmd_consult_ai'
+    # Preguntas meta de auto-mejora: "¿qué aprendiste para mejorarte?", "modificá tu código y
+    # automejorate". NO se mandan a sintetizar (el modelo las rechaza): se responden desde el
+    # estado real del motor (hipótesis que se formuló, experimentos, evolución de código).
+    if has('modificá tu código', 'modifica tu codigo', 'modificar tu código', 'modificar tu codigo',
+           'automejor', 'auto-mejor', 'mejorá tu intelig', 'mejora tu intelig', 'mejorar tu intelig',
+           'mejorar tu propia intelig', 'mejorá tu propia', 'mejorar tus capacidades', 'mejorá tus capacidades',
+           'qué aprendiste', 'que aprendiste', 'para mejorarte', 'mejorar tu programación',
+           'mejorar tu programacion', 'mejorá tu código', 'reescribí tu código', 'reescribir tu código'):
+        return 'self_improve'
     _search_verb = has('buscá', 'busca ', 'buscar', 'buscás', 'busques', 'averiguá', 'averiguar',
                        'conseguí información', 'conseguir información', 'sacá tus conclusiones', 'sacá conclusiones')
     _net = has('en internet', 'en la web', 'en google', 'en la red')
@@ -129,6 +138,8 @@ def ask(store: Store, question: str, *, provider=None, verifier=None, online=Fal
         answer = done[-1]
     elif intent in ('cmd_research', 'cmd_consult_ai') and allow_actions:
         answer = _cmd_research(store, question, intent, provider, verifier, online, done, proposed, needs)
+    elif intent == 'self_improve':
+        answer = _self_improve_report(store)
     elif intent == 'cmd_research':
         # El chat sale EN VIVO a internet (fuentes científicas, solo lectura) y responde con
         # fuentes; si la búsqueda en vivo falla, encola el tema para el motor autónomo.
@@ -169,6 +180,45 @@ def _cmd_agenda(store, question, state, done, proposed) -> str:
                             'El motor la va a tomar primero.')
     return ' '.join(done) if done else ('Decime el id de la investigación (por ejemplo "suspendé 3" '
                                         'o "priorizá 5"). Mirá la agenda con una consulta de estado.')
+
+
+def _self_improve_report(store) -> str:
+    """Responde HONESTO desde el estado real del motor: qué hipótesis de auto-mejora se
+    formuló investigando, qué experimentó y qué capacidad todavía está en construcción.
+    No se lo pasa a sintetizar (evita el rechazo del modelo) ni inventa resultados."""
+    parts = ['Esto es lo real, sin inventar:']
+    # 1) Hipótesis de mejora que ella misma formuló (desde la literatura).
+    try:
+        rows = store.q("SELECT question, priority FROM agenda WHERE origin='sofia' "
+                       "AND status IN ('active','proposed') ORDER BY priority DESC, id DESC LIMIT 4")
+        if rows:
+            parts.append('Mejoras que me formulé sola investigando (van a correr como experimentos):\n'
+                         + '\n'.join('• ' + (r[0] or '')[:110] for r in rows))
+    except Exception:                                   # noqa: BLE001
+        pass
+    # 2) Experimentos reales y sus veredictos.
+    try:
+        vr = store.q("SELECT verdict, COUNT(*) FROM results GROUP BY verdict")
+        tot = sum(c for _, c in vr) if vr else 0
+        if tot:
+            vs = ', '.join(f'{v}: {c}' for v, c in vr)
+            parts.append(f'Experimentos corridos con control: {tot} ({vs}).')
+    except Exception:                                   # noqa: BLE001
+        pass
+    # 3) Evolución real de código (candidatos que mejoraron al incumbente).
+    try:
+        imp = store.q("SELECT skill, COUNT(*) FROM skill_evals WHERE decision='improved' GROUP BY skill")
+        if imp:
+            parts.append('Código propio que reescribí y mejoró en el laboratorio: '
+                         + ', '.join(f'{s} ({c})' for s, c in imp) + '.')
+    except Exception:                                   # noqa: BLE001
+        pass
+    # 4) Lo honesto sobre el límite.
+    parts.append('Lo que TODAVÍA no puedo, y te lo digo derecho: diseñar y construir un mecanismo de '
+                 'arquitectura NUEVO (no solo ajustar mis funciones de scoring ni el entrenamiento). '
+                 'Esa capacidad está en construcción. Hoy convierto lo que leo en hipótesis falsables '
+                 'y las pruebo con control; el salto a inventar arquitecturas nuevas es el próximo paso.')
+    return '\n\n'.join(parts)
 
 
 def _live_research(store, question, provider, fallback, done) -> str:
