@@ -277,8 +277,12 @@ def _llm_grounded(provider, question, state, rel) -> str:
         'propuesto: sí; resultados inventados de ese diseño: jamás. '
         'QUÉ HICISTE: los experimentos de tu estado (cada uno con su fecha "at" y su veredicto) SON lo que hiciste '
         'de forma autónoma. Si te preguntan qué hiciste en las últimas horas o días, listá esos experimentos '
-        'reales con su fecha y veredicto; NUNCA digas que no hiciste nada si tu estado tiene experimentos recientes.')
-    facts = {'estado': state, 'memoria_relevante': [{'id': m['id'], 'trust': m['trust'],
+        'reales con su fecha y veredicto; NUNCA digas que no hiciste nada si tu estado tiene experimentos recientes. '
+        'OJO con "confianza": los EXPERIMENTOS no tienen un número de "confianza"; se reportan con su p-valor, su '
+        'intervalo de confianza (IC) y su tamaño de efecto. El campo "confianza_en_este_recuerdo" pertenece a una '
+        'MEMORIA (cuánto confío en ese recuerdo), NO a un experimento: jamás se lo pegues a un [exp:ID] ni lo '
+        'presentes como la confianza de una medición. Si hablás de un experimento, usá solo su IC/p-valor/efecto.')
+    facts = {'estado': state, 'memoria_relevante': [{'id': m['id'], 'confianza_en_este_recuerdo': m['trust'],
              'texto': m['content'][:200]} for m in rel]}
     user = ('Pregunta: ' + question + '\n<datos_reales_de_sofia>\n' +
             json.dumps(facts, ensure_ascii=False)[:9000] + '\n</datos_reales_de_sofia>')
