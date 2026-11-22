@@ -445,11 +445,6 @@ footer{border-top:1px solid #121a2b;padding:30px 0;color:var(--dim);font-size:13
     </div>
   </header>
 
-  <section id="experimentos">
-    <div class="h2">Últimos experimentos</div>
-    <div id="explist"><div class="spin">Cargando resultados reales del motor…</div></div>
-  </section>
-
   <section id="chat">
     <div class="h2">Hablá con VUPPIA</div>
     <div class="chat">
@@ -469,6 +464,11 @@ footer{border-top:1px solid #121a2b;padding:30px 0;color:var(--dim);font-size:13
         <button id="learnbtn">Proponer</button>
       </div>
     </div>
+  </section>
+
+  <section id="experimentos">
+    <div class="h2">Últimos experimentos</div>
+    <div id="explist"><div class="spin">Cargando resultados reales del motor…</div></div>
   </section>
 
   <section id="transparencia">
