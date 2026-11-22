@@ -1,0 +1,23 @@
+{
+  "exported_at": "2026-11-16T16:53:49+00:00",
+  "skills": [
+    {
+      "skill": "hypothesis",
+      "channel": "lab",
+      "sha256": "6dcba4ea48b39d8f5c4408dd880ff875cbbfbcc78676fa97f30988318da07a2a",
+      "origin": "evolved",
+      "file": "hypothesis.lab.6dcba4ea48b3.py",
+      "has_eval_evidence": true,
+      "eval_file": "hypothesis.lab.6dcba4ea48b3.eval.json"
+    },
+    {
+      "skill": "memory_rank",
+      "channel": "lab",
+      "sha256": "2750a742c202800729bfd13c320241040ee9f7909f60c2a28f9b48d97f1b3e70",
+      "origin": "evolved",
+      "file": "memory_rank.lab.2750a742c202.py",
+      "has_eval_evidence": true,
+      "eval_file": "memory_rank.lab.2750a742c202.eval.json"
+    }
+  ]
+}

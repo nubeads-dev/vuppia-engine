@@ -1,0 +1,29 @@
+# Stack VUPPIA SOFÍA en el VPS.
+# El worker corre el loop autonomo 24/7 y usa el Docker del host (socket montado)
+# para lanzar los sandbox aislados. Los secretos y limites se inyectan por entorno.
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.vps
+    image: vuppia-worker:1
+    container_name: vuppia-worker
+    restart: unless-stopped
+    volumes:
+      # Socket del host: el worker (confiable) lanza los contenedores-sandbox hermanos.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Datos persistentes (ledger SQLite): sobreviven reinicios.
+      - vuppia-data:/app/data
+    environment:
+      - VUPPIA_INTERVAL=${VUPPIA_INTERVAL:-900}
+      # Hito 1: proveedor gratis determinista -> costo 0.
+      - VUPPIA_PROPOSER=${VUPPIA_PROPOSER:-fake}
+      - VUPPIA_RESEARCHER=${VUPPIA_RESEARCHER:-fake}
+      - VUPPIA_VERIFIER=${VUPPIA_VERIFIER:-fake}
+      # Tope de gasto duro: 0 USD. Cualquier llamada paga queda bloqueada.
+      - VUPPIA_DAILY_BUDGET_USD=${VUPPIA_DAILY_BUDGET_USD:-0}
+      - VUPPIA_MONTHLY_BUDGET_USD=${VUPPIA_MONTHLY_BUDGET_USD:-0}
+      - VUPPIA_PER_CALL_CAP_USD=${VUPPIA_PER_CALL_CAP_USD:-0}
+
+volumes:
+  vuppia-data:

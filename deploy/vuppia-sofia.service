@@ -1,0 +1,39 @@
+# Servicio systemd para el runner autónomo de VUPPIA SOFÍA (VPS Linux con Docker).
+# Instalar:
+#   sudo cp deploy/vuppia-sofia.service /etc/systemd/system/
+#   sudo cp deploy/vuppia-sofia.env /etc/vuppia-sofia.env   # editar antes (claves, presupuesto)
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now vuppia-sofia        # arranca ahora y en cada boot
+#   systemctl status vuppia-sofia                   # ver estado
+#   journalctl -u vuppia-sofia -f                   # ver logs en vivo
+# Freno limpio:  sudo systemctl stop vuppia-sofia   (o crear el archivo VUPPIA_STOP)
+
+[Unit]
+Description=VUPPIA SOFIA - runner autonomo de investigacion y autoevolucion (laboratorio aislado)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=vuppia
+Group=vuppia
+WorkingDirectory=/opt/vuppia/worker
+EnvironmentFile=/etc/vuppia-sofia.env
+# Arranque automatico del loop; intervalo configurable por VUPPIA_INTERVAL (default 900s).
+ExecStart=/usr/bin/python3 cli.py autonomous --interval ${VUPPIA_INTERVAL}
+# Reinicio automatico ante caida (pero no en bucle rapido).
+Restart=on-failure
+RestartSec=30
+# Guardas del sistema: sin privilegios extra, FS casi de solo lectura.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/vuppia/worker/data
+PrivateTmp=true
+# Limites de recursos del proceso supervisor (el sandbox tiene los suyos por contenedor).
+MemoryMax=1G
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

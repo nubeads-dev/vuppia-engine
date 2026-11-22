@@ -1,0 +1,16 @@
+# Imagen del worker VUPPIA SOFÍA para el VPS.
+# El worker corre como proceso confiable y usa el Docker del HOST (socket montado)
+# para lanzar los contenedores-sandbox endurecidos donde corre el codigo no confiable.
+FROM python:3.12-slim
+
+# CLI de Docker (solo cliente) para hablar con el daemon del host via el socket montado.
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+
+WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY . /app
+RUN chmod +x /app/entrypoint.sh && mkdir -p /app/data
+
+ENTRYPOINT ["/app/entrypoint.sh"]
