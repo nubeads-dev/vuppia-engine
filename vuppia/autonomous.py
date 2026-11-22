@@ -84,6 +84,41 @@ def _budget_left(store: Store) -> float:
     return daily_budget() - spent
 
 
+def _improve_from_research(store: Store, proposer, research_result: dict, topic: str):
+    """Puente literatura → auto-mejora: a partir de lo que ACABA de leer, formula UNA
+    hipótesis concreta y falsable sobre cómo mejorar su propia arquitectura (memoria,
+    metacognición, incertidumbre, aprendizaje continuo, autorrepresentación) y la encola.
+    No inventa resultados: se apoya en la síntesis/evidencia del research que corrió."""
+    syn = (research_result or {}).get('synthesis') or {}
+    findings = (syn.get('answer') or '')[:1200]
+    ev = (research_result or {}).get('evidence') or []
+    if not findings and not ev:
+        return None
+    srcs = '; '.join((s.get('title') or '')[:80] for s in ev[:4])
+    system = (
+        'Sos VUPPIA SOFÍA, un sistema de investigación de IA que se automejora. Leíste literatura '
+        'científica. A partir de ESO, proponé UNA mejora concreta y falsable de tu PROPIA arquitectura '
+        '(elegí un eje: memoria, metacognición/estimación de incertidumbre, aprendizaje continuo, '
+        'razonamiento o autorrepresentación). Debe poder probarse como experimento con un control y una '
+        'métrica. No afirmes ser consciente. No inventes resultados. Respondé SOLO JSON: '
+        '{"pregunta": "<pregunta de investigación falsable, 1 línea>", "mecanismo": "<qué mecanismo de la '
+        'literatura la inspira, 1 línea>"}.')
+    user = f'Tema investigado: {topic}\nHallazgos: {findings}\nFuentes: {srcs}'
+    try:
+        raw = proposer.complete(system, user, purpose='improve_from_research', max_tokens=220, temperature=0.6)
+        from .providers import extract_json
+        obj = extract_json(raw)
+        q = (obj.get('pregunta') or '').strip()
+        mech = (obj.get('mecanismo') or '').strip()
+        if not q or len(q) < 10:
+            return None
+        aid = agenda.add(store, q[:80], q + (f' [inspirado en: {mech}]' if mech else ''),
+                         status='active', origin='sofia', priority=2.0)
+        return {'id': aid, 'question': q, 'mechanism': mech}
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
 def _self_question(store: Store, proposer):
     """Curiosidad autónoma: el cerebro inventa UNA pregunta de investigación nueva, falsable,
     a partir de lo que ya midió, y la agenda como tema activo. Así VUPPIA se pregunta cosas sola."""
@@ -179,9 +214,14 @@ def tick(store: Store, cfg: dict) -> dict:
         if top and os.getenv('VUPPIA_AUTONOMOUS_ONLINE') == '1' and _ntick % 3 == 0 and (_free or _budget_left(store) > 0.05):
             try:
                 from . import research
-                r = research.investigate(store, top['question'] or top['topic'], online=True,
+                _topic = top['question'] or top['topic']
+                r = research.investigate(store, _topic, online=True,
                                          researcher=proposer, verifier=from_env(store, 'verifier'), max_steps=2)
                 did['actions'].append({'research': top['id'], 'refs': len(r['evidence'])})
+                # Puente: convierte lo leído en una hipótesis de auto-mejora y la encola.
+                imp = _improve_from_research(store, proposer, r, _topic)
+                if imp:
+                    did['actions'].append({'improve_from_research': imp['id'], 'q': imp['question'][:80]})
             except BudgetExceeded:
                 did['actions'].append({'research': 'presupuesto agotado'})
             except Exception as exc:                   # noqa: BLE001
