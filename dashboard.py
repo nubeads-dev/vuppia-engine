@@ -1352,6 +1352,16 @@ class H(BaseHTTPRequestHandler):
             self._send(200, sitemap_xml().encode(), 'application/xml; charset=utf-8')
         elif self.path == '/' or self.path.startswith('/?'):
             self._send(200, PAGE.encode(), 'text/html; charset=utf-8')
+        elif self.path.startswith('/api/mission'):
+            try:
+                import sys as _s
+                if '/app' not in _s.path:
+                    _s.path.insert(0, '/app')
+                from vuppia import charter as _ch
+                out = _ch.charter()
+            except Exception as e:
+                out = {'error': str(e)}
+            self._send(200, json.dumps(out, ensure_ascii=False).encode(), 'application/json; charset=utf-8')
         elif self.path == '/healthz':
             self._send(200, b'ok', 'text/plain')
         else:

@@ -68,7 +68,7 @@ def oracle_value(features: dict) -> float:
     return acc / 64
 
 
-def enumerate_candidates(store: Store, pool_seed: int, size: int = 8) -> list[dict]:
+def enumerate_candidates(store: Store, pool_seed: int, size: int = 8, kinds=None) -> list[dict]:
     """Candidatos reales: combinaciones de protocolo/parámetros con sus features.
 
     Los experimentos candidatos cubren perfiles variados en las cuatro dimensiones
@@ -79,7 +79,9 @@ def enumerate_candidates(store: Store, pool_seed: int, size: int = 8) -> list[di
     las funciones coinciden)."""
     rng = np.random.default_rng(pool_seed)
     cands = []
-    protos = list(PROTOCOLS)
+    protos = [p for p in PROTOCOLS if PROTOCOLS[p]['kind'] in kinds] if kinds else list(PROTOCOLS)
+    if not protos:
+        protos = list(PROTOCOLS)
     for i in range(size):
         protocol = protos[rng.integers(len(protos))]
         spec = PROTOCOLS[protocol]
@@ -115,12 +117,12 @@ def rank(store: Store, candidates: list[dict], skill_source: str) -> list[dict]:
     return [{'candidate': c, 'priority': s} for c, s in ordered]
 
 
-def choose(store: Store, skill_channel: str = 'lab', pool_seed: int | None = None) -> dict:
+def choose(store: Store, skill_channel: str = 'lab', pool_seed: int | None = None, kinds=None) -> dict:
     """Elige el próximo experimento según la Primera Ley + la skill. Registra la decisión."""
     import secrets
     pool_seed = pool_seed if pool_seed is not None else secrets.randbelow(2**31)
     sha, source = evolve.current(store, 'hypothesis', channel=skill_channel)
-    cands = enumerate_candidates(store, pool_seed)
+    cands = enumerate_candidates(store, pool_seed, kinds=kinds)
     ranked = rank(store, cands, source)
     chosen = ranked[0]['candidate']
     oracle_best = max(cands, key=lambda c: c['oracle'])

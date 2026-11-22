@@ -37,19 +37,18 @@ def protocol_fingerprint(protocol: str) -> str:
     return sha256(canonical(h))
 
 
-def plan_policy(store: Store, channel: str = 'lab', pool_seed: int | None = None) -> dict:
+def plan_policy(store: Store, channel: str = 'lab', pool_seed: int | None = None,
+                kinds=('simulation',)) -> dict:
     """Planifica el próximo experimento según la POLÍTICA de la Primera Ley (planner.choose),
-    usando la skill evolucionada para priorizar. La Primera Ley orienta la investigación."""
+    usando la skill evolucionada para priorizar por valor de información e incertidumbre.
+    Restringe a `kinds` (por defecto solo simulación: los LLM son caros y van por otra vía)."""
     from . import planner
-    decision = planner.choose(store, skill_channel=channel, pool_seed=pool_seed)
+    decision = planner.choose(store, skill_channel=channel, pool_seed=pool_seed, kinds=kinds)
     cand = decision['chosen']
     protocol = cand['protocol']
     spec = PROTOCOLS[protocol]
-    # Para simulación usamos control fuerte; para LLM, los dos brazos del protocolo.
-    if protocol == 'introspection_probe':
-        test, control = 'self_full', 'other_full'
-    else:
-        test, control = spec['arms'][0], spec['arms'][1]
+    # Misma convención de dirección test/control que plan_rule (la validada en producción).
+    test, control = spec['arms'][1], spec['arms'][0]
     plan = _assemble(store, protocol, f'policy(regret={decision["regret"]})', cand['params'], test, control,
                      question=spec['description'],
                      statement=f'El brazo {test} supera al brazo {control} en «{spec["metric"]}».',

@@ -128,6 +128,13 @@ def tick(store: Store, cfg: dict) -> dict:
                       "WHERE day=date('now')")[0]
     did['cost_before'] = round(cost0, 4)
 
+    # 0) Carta fundacional (misión): persistente y auditable; no-op si no cambió.
+    try:
+        from . import charter
+        charter.record(store)
+    except Exception:                                   # noqa: BLE001
+        pass
+
     # 1) Integridad de la bitácora (gratis, siempre).
     try:
         ok = store.verify_ledger()['ok']
@@ -138,10 +145,16 @@ def tick(store: Store, cfg: dict) -> dict:
     except Exception as exc:                          # noqa: BLE001
         did['errors'].append('integridad: ' + repr(exc)[:120]); return did
 
-    # 2) Un experimento orientado por la Primera Ley (gratis, en sandbox).
+    # 2) Un experimento ELEGIDO POR LA POLÍTICA (valor de información + incertidumbre, con
+    #    la skill evolucionada y regret registrado). Si falla, cae a la rotación por cobertura.
     if cfg.get('experiments', True):
         try:
-            plan = mission.plan_rule(store)
+            try:
+                plan = mission.plan_policy(store)
+                did['actions'].append({'seleccion': 'politica', 'regret': plan.get('planner', {}).get('regret')})
+            except Exception as exc:                       # noqa: BLE001
+                plan = mission.plan_rule(store)
+                did['actions'].append({'seleccion': 'rotacion', 'motivo': repr(exc)[:80]})
             mission.preregister(store, plan['id'])
             res = mission.execute(store, plan['id'], subject=from_env(store, 'subject'))
             did['actions'].append({'experiment': plan['id'], 'verdict': res['verdict']})
