@@ -560,6 +560,105 @@ def admin_action(action, tok, args=None):
                     st.db.close()
                 except Exception:
                     pass
+
+    # --- Evolución de código: ver candidatos y promover a producción CON FIRMA ---
+    if action in ('evo_list', 'evo_diff'):
+        try:
+            c = _conn()
+        except Exception as e:
+            return {'ok': False, 'error': f'base no disponible ({e})'}
+        try:
+            skills = ['hypothesis', 'memory_rank']
+            ptr = {}
+            try:
+                for sk, ch, sha in c.execute(
+                        "SELECT skill,channel,sha FROM skill_pointers WHERE channel IN ('lab','production')"):
+                    ptr[(sk, ch)] = sha
+            except Exception:
+                pass
+            if action == 'evo_diff':
+                sk = args.get('skill', '')
+                if sk not in skills:
+                    return {'ok': False, 'error': 'skill desconocida'}
+                def _src(sha):
+                    if not sha:
+                        return None
+                    r = c.execute('SELECT source FROM skill_versions WHERE skill=? AND sha=?', (sk, sha)).fetchone()
+                    return r[0] if r else None
+                lab = ptr.get((sk, 'lab')); prod = ptr.get((sk, 'production'))
+                base = _src(prod)
+                if base is None:
+                    try:
+                        import sys as _s
+                        if '/app' not in _s.path:
+                            _s.path.insert(0, '/app')
+                        from vuppia import evolve as _ev
+                        base = _ev.seed_source(sk)
+                        base_label = 'semilla'
+                    except Exception:
+                        base = ''; base_label = 'semilla'
+                else:
+                    base_label = 'producción'
+                return {'ok': True, 'skill': sk, 'lab_source': _src(lab) or '',
+                        'base_source': base or '', 'base_label': base_label}
+            out = []
+            for sk in skills:
+                lab = ptr.get((sk, 'lab')); prod = ptr.get((sk, 'production'))
+                ev = None
+                if lab:
+                    r = c.execute('SELECT decision,analysis,at FROM skill_evals WHERE skill=? AND candidate_sha=? '
+                                  'ORDER BY id DESC LIMIT 1', (sk, lab)).fetchone()
+                    if r:
+                        try:
+                            an = json.loads(r[1]) if r[1] else {}
+                        except Exception:
+                            an = {}
+                        ev = {'decision': r[0], 'at_ar': _ar(r[2]),
+                              'candidate_mean': an.get('candidate_mean'),
+                              'incumbent_mean': an.get('incumbent_mean'),
+                              'worst_regime_delta': an.get('worst_regime_delta')}
+                origin = created = None
+                if lab:
+                    rv = c.execute('SELECT origin,created_at FROM skill_versions WHERE skill=? AND sha=?',
+                                   (sk, lab)).fetchone()
+                    if rv:
+                        origin, created = rv[0], _ar(rv[1])
+                out.append({'skill': sk, 'lab_sha': lab, 'prod_sha': prod,
+                            'promotable': bool(lab and lab != prod), 'eval': ev,
+                            'origin': origin, 'created_at': created})
+            pubkey = bool(_os.getenv('VUPPIA_APPROVAL_PUBKEY', '').strip())
+            return {'ok': True, 'skills': out, 'approval_configured': pubkey}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    if action == 'promote':
+        sk = args.get('skill', ''); sha = (args.get('sha', '') or '').strip()
+        token = (args.get('token_firma', '') or '').strip()
+        if not sk or not sha or not token:
+            return {'ok': False, 'error': 'faltan skill, sha o token de firma'}
+        st = None
+        try:
+            st, _ = _admin_store()
+            import sys as _s
+            if '/app' not in _s.path:
+                _s.path.insert(0, '/app')
+            from vuppia import evolve as _ev
+            res = _ev.promote_production(st, sk, sha, token)
+            return {'ok': True, **res}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            if st is not None:
+                try:
+                    st.db.close()
+                except Exception:
+                    pass
+
     return {'ok': False, 'error': 'acción desconocida'}
 
 
@@ -977,7 +1076,16 @@ button.g{background:#241a33;border-color:#4a3570;color:#c4a9ff}
       <span id="acounts" class="tag"></span>
     </div>
     <div id="agenda" style="margin-top:6px"><div class="mut">Cargando…</div></div>
-    <div class="note">Subir prioridad empuja un tema al frente (el motor toma el activo de mayor prioridad en cada corrida). <b>Aprobar</b> pasa una propuesta a activa. <b>Suspender</b> la saca de la cola sin borrarla. Pasar a producción el código que ella reescribe es un paso aparte, con firma — eso no se toca desde acá.</div>
+    <div class="note">Subir prioridad empuja un tema al frente (el motor toma el activo de mayor prioridad en cada corrida). <b>Aprobar</b> pasa una propuesta a activa. <b>Suspender</b> la saca de la cola sin borrarla.</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>Evolución de código → producción</b>
+      <span id="evostate" class="tag"></span>
+    </div>
+    <div id="evo" style="margin-top:6px"><div class="mut">Cargando…</div></div>
+    <div class="note">VUPPIA reescribe estas funciones y las evalúa sola en el lab (sandbox, control A/A). <b>Nada pasa a producción sin tu firma.</b> Firmás en tu máquina (la clave privada nunca toca el servidor), pegás el token acá y recién ahí el código aprobado entra a la versión viva. Es de un solo uso y vence.</div>
   </div>
 </div>
 
@@ -1017,6 +1125,59 @@ function setEngine(st){
 function refresh(){
   fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json()}).then(setEngine).catch(function(){});
   loadAgenda();
+  loadEvo();
+}
+function fnum(x){return (x==null)?'–':Number(x).toFixed(4)}
+function loadEvo(){
+  api('evo_list').then(function(d){
+    var box=document.getElementById('evo');
+    if(!d.ok){box.innerHTML='<div class="mut">'+esc(d.error||'error')+'</div>';return}
+    document.getElementById('evostate').textContent=d.approval_configured?'autoridad de firma: configurada':'autoridad de firma: FALTA pubkey en servidor';
+    box.innerHTML=(d.skills||[]).map(function(s){
+      var prod=s.prod_sha?('<code>'+esc(s.prod_sha.slice(0,12))+'</code>'):'<span class="mut">semilla (sin promover)</span>';
+      var lab=s.lab_sha?('<code>'+esc(s.lab_sha.slice(0,12))+'</code>'):'<span class="mut">—</span>';
+      var ev=s.eval;var evline='';
+      if(ev){
+        var dec=ev.decision==='improved'?'<span class="pill active">mejora</span>':'<span class="pill done">sin mejora</span>';
+        evline='<div class="mut" style="margin-top:4px">'+dec+' · candidato '+fnum(ev.candidate_mean)+' vs incumbente '+fnum(ev.incumbent_mean)+' · peor régimen Δ '+fnum(ev.worst_regime_delta)+' · '+esc(ev.at_ar||'')+'</div>';
+      }
+      var actions='<div class="row" style="margin-top:8px"><button onclick="evoDiff(\''+s.skill+'\')">Ver código</button>';
+      if(s.promotable)actions+=' <button class="g" onclick="toggleSign(\''+s.skill+'\',\''+esc(s.lab_sha)+'\')">Promover a producción…</button>';
+      actions+='</div>';
+      var signbox='<div id="sign_'+s.skill+'" class="hid" style="margin-top:10px;border-top:1px solid #121a2b;padding-top:10px">'+
+        '<div class="mut">1) Firmá en tu máquina (donde está tu clave privada):</div>'+
+        '<input readonly onclick="this.select()" style="margin:6px 0;font-family:monospace;font-size:12px" '+
+        'value="python3 -m vuppia.approval sign --skill '+s.skill+' --sha '+esc(s.lab_sha||'')+' --ttl 3600">'+
+        '<div class="mut">2) Pegá el token firmado:</div>'+
+        '<input id="tok_'+s.skill+'" placeholder="token de aprobación" style="margin:6px 0">'+
+        '<button class="p" onclick="promote(\''+s.skill+'\',\''+esc(s.lab_sha)+'\')">Promover a producción</button>'+
+        '<div id="promsg_'+s.skill+'" class="mut" style="margin-top:6px"></div></div>';
+      var diffbox='<pre id="diff_'+s.skill+'" class="hid" style="margin-top:8px;max-height:300px;overflow:auto;background:#070b12;border:1px solid #121a2b;border-radius:10px;padding:10px;font-size:12px;white-space:pre-wrap"></pre>';
+      return '<div class="it"><div class="tp">'+esc(s.skill)+'</div>'+
+        '<div class="mut">producción: '+prod+' · lab: '+lab+(s.promotable?' <span class="pill proposed">candidato sin aprobar</span>':' <span class="pill done">al día</span>')+'</div>'+
+        evline+actions+signbox+diffbox+'</div>';
+    }).join('');
+  }).catch(function(){document.getElementById('evo').innerHTML='<div class="mut">No pude cargar la evolución.</div>'});
+}
+function toggleSign(sk){var e=document.getElementById('sign_'+sk);e.classList.toggle('hid')}
+function evoDiff(sk){
+  var pre=document.getElementById('diff_'+sk);
+  if(!pre.classList.contains('hid')){pre.classList.add('hid');return}
+  pre.classList.remove('hid');pre.textContent='Cargando…';
+  api('evo_diff',{skill:sk}).then(function(d){
+    if(!d.ok){pre.textContent=d.error||'error';return}
+    pre.textContent='=== VERSIÓN LAB (candidato) ===\n'+(d.lab_source||'(sin código)')+'\n\n=== BASE EN VIVO ('+(d.base_label||'')+') ===\n'+(d.base_source||'(semilla)');
+  }).catch(function(){pre.textContent='error al cargar'});
+}
+function promote(sk,sha){
+  var tok=(document.getElementById('tok_'+sk).value||'').trim();
+  var msg=document.getElementById('promsg_'+sk);
+  if(!tok){msg.textContent='Pegá el token firmado primero.';return}
+  msg.textContent='Verificando firma…';
+  api('promote',{skill:sk,sha:sha,token_firma:tok}).then(function(d){
+    if(d.ok){msg.innerHTML='<span style="color:#49e08a">✓ Promovido a producción ('+esc((d.promoted_to_production||'').slice(0,12))+'). Ya es la versión viva.</span>';loadEvo()}
+    else{msg.innerHTML='<span style="color:#ff8a8a">'+esc(d.error||'no se pudo')+'</span>'}
+  }).catch(function(){msg.textContent='error de red'});
 }
 function togglePause(){
   api(PAUSED?'resume':'pause').then(function(d){if(d.ok)refresh();else alert(d.error||'error')});
