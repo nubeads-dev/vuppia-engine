@@ -406,6 +406,10 @@ section{padding:40px 0}
 .msg{font-size:15.5px;line-height:1.68;white-space:pre-wrap;max-width:100%;word-wrap:break-word}
 .msg.u{align-self:flex-end;background:#15294a;color:#dcebff;padding:12px 16px;border-radius:14px;max-width:85%}
 .msg.s{align-self:stretch;color:var(--txt);padding:14px 16px;background:#0b142466;border-left:2px solid var(--cy);border-radius:0 12px 12px 0}
+.mbody{white-space:pre-wrap;word-wrap:break-word}
+.acts{margin-top:10px;display:flex;gap:8px}
+.copybtn{background:#0e1626;border:1px solid var(--line);color:var(--mut);font-size:12.5px;padding:5px 11px;border-radius:8px;cursor:pointer;transition:all .15s}
+.copybtn:hover{border-color:var(--cy);color:var(--txt)}
 .cin{display:flex;gap:10px;padding:16px;border-top:1px solid var(--line)}
 .cin input{flex:1;background:#0a111e;border:1px solid var(--line);color:var(--txt);border-radius:12px;padding:14px 16px;font-size:15.5px;outline:none}
 .cin input:focus{border-color:var(--cy)}
@@ -511,9 +515,10 @@ function render(st){
 }
 fetch('/api/state').then(function(r){return r.json();}).then(render).catch(function(){render(SAMPLE);});
 
-function add(cls,txt){var l=document.getElementById('clog');var m=document.createElement('div');m.className='msg '+cls;m.textContent=txt;l.appendChild(m);l.scrollTop=l.scrollHeight;return m;}
+function add(cls,txt){var l=document.getElementById('clog');var m=document.createElement('div');m.className='msg '+cls;var b=document.createElement('div');b.className='mbody';b.textContent=txt;m.appendChild(b);m._body=b;l.appendChild(m);m.scrollIntoView({behavior:'smooth',block:'nearest'});return m;}
+function addCopy(m){if(m._done)return;m._done=1;var acts=document.createElement('div');acts.className='acts';var btn=document.createElement('button');btn.className='copybtn';btn.textContent='Copiar';btn.onclick=function(){var t=m._body.textContent;navigator.clipboard.writeText(t).then(function(){btn.textContent='Copiado ✓';setTimeout(function(){btn.textContent='Copiar';},1500);});};acts.appendChild(btn);m.appendChild(acts);}
 function sendChat(){var i=document.getElementById('q');var q=i.value.trim();if(!q)return;i.value='';add('u',q);var p=add('s','pensando…');
- fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})}).then(function(r){return r.json();}).then(function(d){p.textContent=d.answer||'(sin respuesta)';}).catch(function(){p.textContent='No pude responder ahora.';});}
+ fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})}).then(function(r){return r.json();}).then(function(d){p._body.textContent=d.answer||'(sin respuesta)';addCopy(p);p.scrollIntoView({behavior:'smooth',block:'nearest'});}).catch(function(){p._body.textContent='No pude responder ahora.';});}
 document.getElementById('send').onclick=sendChat;
 document.getElementById('q').addEventListener('keydown',function(e){if(e.key==='Enter')sendChat();});
 function learn(){var i=document.getElementById('learn');var q=i.value.trim();if(!q)return;i.value='';
