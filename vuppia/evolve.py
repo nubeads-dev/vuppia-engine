@@ -302,7 +302,7 @@ def generate_candidate(store: Store, skill: str, proposer) -> str:
     _, inc_source = current(store, skill)
     system = PROMPTS[spec['func']]
     user = ('Módulo actual:\n' + inc_source + '\n\nProponé una versión mejor. Solo el código.')
-    raw = proposer.complete(system, user, purpose='evolve_generate', max_tokens=700, temperature=0.6)
+    raw = proposer.complete(system, user, purpose='evolve_generate', max_tokens=4000, temperature=0.6)
     src = raw.strip()
     if src.startswith('```'):
         src = src.split('\n', 1)[1].rsplit('```', 1)[0]
