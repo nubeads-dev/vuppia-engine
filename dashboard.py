@@ -548,27 +548,60 @@ def admin_action(action, tok, args=None):
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
-    # --- Banco A/B de la capa de razonamiento (con vs sin capa, sobre preguntas verificables) ---
+    # --- Banco A/B de la capa de razonamiento (en segundo plano: tarda varios minutos) ---
     if action == 'ab_eval':
+        import threading
+        import sys as _sys
+        import json as _json
+        if '/app' not in _sys.path:
+            _sys.path.insert(0, '/app')
+
+        def _ab_worker():
+            from vuppia.store import Store
+            from vuppia import providers, ab_bench
+            s = Store('/data/vuppia.sqlite3')
+            try:
+                with s.tx() as db:
+                    db.execute('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
+                    db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('ab_bench',?)",
+                               (_json.dumps({'status': 'running',
+                                             'at': datetime.now(timezone.utc).isoformat()}),))
+                prov = providers.from_env(s, 'chat') or providers.from_env(s, 'proposer')
+                fb = None
+                if _os.getenv('GROQ_API_KEY'):
+                    alt = 'openai/gpt-oss-20b'
+                    if getattr(prov, 'model', None) != alt:
+                        fb = providers.Groq(s, alt)
+                res = ab_bench.run(s, prov, fallback=fb)
+                res['status'] = 'done'
+                res['at'] = datetime.now(timezone.utc).isoformat()
+                with s.tx() as db:
+                    db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('ab_bench',?)", (_json.dumps(res),))
+            except Exception as e:                      # noqa: BLE001
+                try:
+                    with s.tx() as db:
+                        db.execute('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
+                        db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('ab_bench',?)",
+                                   (_json.dumps({'status': 'error', 'error': str(e)[:300]}),))
+                except Exception:
+                    pass
+            finally:
+                try:
+                    s.db.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_ab_worker, daemon=True).start()
+        return {'ok': True, 'started': True, 'msg': 'Banco corriendo en segundo plano. '
+                'Consultá con action=ab_result en 2-5 min.'}
+
+    if action == 'ab_result':
         st = None
         try:
             st, _ = _admin_store()
-        except Exception as e:
-            return {'ok': False, 'error': f'no puedo abrir la base ({e})'}
-        try:
-            import sys as _sys
-            if '/app' not in _sys.path:
-                _sys.path.insert(0, '/app')
-            from vuppia import providers, ab_bench
-            prov = providers.from_env(st, 'chat') or providers.from_env(st, 'proposer')
-            if prov is None:
-                return {'ok': False, 'error': 'no hay modelo de chat configurado'}
-            fb = None
-            if _os.getenv('GROQ_API_KEY'):
-                alt = 'openai/gpt-oss-20b'
-                if getattr(prov, 'model', None) != alt:
-                    fb = providers.Groq(st, alt)
-            return ab_bench.run(st, prov, fallback=fb)
+            import json as _json
+            row = st.one("SELECT v FROM kv WHERE k='ab_bench'")
+            return {'ok': True, 'result': _json.loads(row[0]) if row and row[0] else None}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
         finally:
