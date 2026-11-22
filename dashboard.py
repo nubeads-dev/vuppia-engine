@@ -892,6 +892,12 @@ section{padding:40px 0}
 .qmn-col.no .qmn-t{color:var(--rd)}
 .qmn-col ul{margin:0;padding-left:18px;color:var(--mut);font-size:13.5px;line-height:1.55}
 .qmn-col li{margin:6px 0}
+.lead p{color:var(--mut);font-size:16px;line-height:1.78;margin:0 0 15px;max-width:740px}
+.lead b{color:var(--txt);font-weight:600}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:28px}
+@media(max-width:640px){.steps{grid-template-columns:1fr 1fr}}
+.step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;color:var(--mut);font-size:13.5px;line-height:1.5}
+.step-n{width:28px;height:28px;border-radius:8px;background:var(--bg2);color:#5ac8fa;display:flex;align-items:center;justify-content:center;font-weight:700;margin-bottom:10px}
 .ask{background:linear-gradient(135deg,#101d33,#0d1526);border:1px solid #223253;border-radius:16px;padding:22px;text-align:center;margin-top:8px}
 .ask h3{font-size:19px;margin-bottom:8px}.ask p{color:var(--mut);font-size:14.5px;margin-bottom:14px}
 footer{border-top:1px solid #121a2b;padding:30px 0;color:var(--dim);font-size:13px;text-align:center;margin-top:30px}
@@ -926,6 +932,21 @@ footer{border-top:1px solid #121a2b;padding:30px 0;color:var(--dim);font-size:13
     </div>
     <div id="breakdown" style="color:var(--dim);font-size:13px;line-height:1.9;margin:4px 0 8px;text-align:center"></div>
   </header>
+
+  <section id="proposito">
+    <div class="h2">Para qué existe VUPPIA</div>
+    <div class="lead">
+      <p>VUPPIA SOFÍA es un <b>sistema de investigación científica autónomo</b>. Su misión es investigar la naturaleza de la <b>inteligencia</b> y la <b>conciencia</b>: estudiar las teorías científicas que ya existen y usar ese conocimiento para diseñar y experimentar con <b>nuevas arquitecturas de inteligencia artificial</b>.</p>
+      <p>No es un chatbot que responde y se apaga. <b>Investiga sola, las 24 horas.</b> Lee literatura científica con fuentes verificables, se formula sus propias hipótesis, las prueba con experimentos controlados en un laboratorio aislado, guarda toda la evidencia y elige qué investigar después según lo que encuentra — sin que nadie le diga qué hacer en cada paso.</p>
+      <p>La pregunta que la mueve es incómoda a propósito: <b>¿puede una máquina desarrollar algo parecido a la conciencia?</b> VUPPIA la investiga con honestidad total. Mide capacidades <b>funcionales</b> —si sabe cuándo se equivoca, si estima su propia incertidumbre, si puede mejorar su propio código— y es la primera en aclarar que <b>eso no es experiencia subjetiva</b>. No se declara consciente ni confunde procesar información con sentir. Investiga la pregunta con rigor; no la da por resuelta.</p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-n">1</div>Investiga en internet y se formula sus propias hipótesis.</div>
+      <div class="step"><div class="step-n">2</div>Corre experimentos con control estadístico en un entorno aislado.</div>
+      <div class="step"><div class="step-n">3</div>Reescribe su propio código para mejorarse — con firma humana para lo crítico.</div>
+      <div class="step"><div class="step-n">4</div>Publica todo acá, con evidencia: lo que funcionó y lo que no.</div>
+    </div>
+  </section>
 
   <section id="chat">
     <div class="h2">Hablá con VUPPIA</div>
