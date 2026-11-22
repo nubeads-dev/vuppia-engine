@@ -298,10 +298,29 @@ PROMPTS = {
 
 
 def generate_candidate(store: Store, skill: str, proposer) -> str:
+    import json
     spec = skill_spec(skill)
     _, inc_source = current(store, skill)
     system = PROMPTS[spec['func']]
-    user = ('Módulo actual:\n' + inc_source + '\n\nProponé una versión mejor. Solo el código.')
+    # Feedback del último intento: que el cerebro aprenda del rechazo en vez de tirar a ciegas.
+    hint = ''
+    last = store.one('SELECT analysis,decision FROM skill_evals WHERE skill=? ORDER BY id DESC LIMIT 1', (skill,))
+    if last and last[1] != 'improved':
+        try:
+            a = json.loads(last[0])
+            errs = a.get('candidate_errors') or []
+            if errs:
+                hint = ('\n\nTu intento ANTERIOR fue RECHAZADO porque el código fallaba al ejecutarse: '
+                        + str(errs[:2])[:300] + '. Escribí código que corra sin errores.')
+            elif not a.get('no_regression', True):
+                hint = ('\n\nTu intento ANTERIOR fue RECHAZADO porque empeoraba en algún régimen (peor delta '
+                        + str(a.get('worst_regime_delta')) + '). Mejorá SIN romper ningún régimen.')
+            else:
+                hint = ('\n\nTu intento ANTERIOR no superó al actual de forma significativa. Probá un cambio '
+                        'más audaz (no cosmético), manteniendo la robustez en todos los regímenes.')
+        except Exception:
+            pass
+    user = ('Módulo actual:\n' + inc_source + hint + '\n\nProponé una versión mejor. Solo el código.')
     raw = proposer.complete(system, user, purpose='evolve_generate', max_tokens=4000, temperature=0.6)
     src = raw.strip()
     if src.startswith('```'):

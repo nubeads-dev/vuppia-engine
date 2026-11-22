@@ -112,7 +112,11 @@ def tick(store: Store, cfg: dict) -> dict:
     # 2) Un experimento orientado por la Primera Ley (gratis, en sandbox).
     if cfg.get('experiments', True):
         try:
-            plan = mission.plan_rule(store)
+            # Si hay un modelo SUJETO configurado, incluir también los protocolos LLM:
+            # así VUPPIA se estudia a SÍ MISMA (al modelo real), no solo a redes de juguete.
+            _subj = from_env(store, 'subject')
+            _kinds = ('simulation', 'llm') if _subj else ('simulation',)
+            plan = mission.plan_rule(store, kinds=_kinds)
             mission.preregister(store, plan['id'])
             res = mission.execute(store, plan['id'], subject=from_env(store, 'subject'))
             did['actions'].append({'experiment': plan['id'], 'verdict': res['verdict']})

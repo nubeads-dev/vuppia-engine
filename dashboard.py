@@ -457,6 +457,16 @@ section{padding:40px 0}
 .cin input:focus{border-color:var(--cy)}
 .cin button{background:linear-gradient(90deg,#1b82c4,#2563a8);color:#fff;border:none;border-radius:12px;padding:0 22px;font-weight:600;font-size:15px;cursor:pointer}
 .note{background:#0c1322;border:1px solid var(--line);border-left:3px solid var(--vi);border-radius:12px;padding:16px 18px;color:var(--mut);font-size:14px}
+.qmn{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:640px){.qmn{grid-template-columns:1fr}}
+.qmn-col{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.qmn-col.ok{border-left:3px solid var(--gr)}
+.qmn-col.no{border-left:3px solid var(--rd)}
+.qmn-t{font-weight:700;font-size:14.5px;margin-bottom:10px}
+.qmn-col.ok .qmn-t{color:var(--gr)}
+.qmn-col.no .qmn-t{color:var(--rd)}
+.qmn-col ul{margin:0;padding-left:18px;color:var(--mut);font-size:13.5px;line-height:1.55}
+.qmn-col li{margin:6px 0}
 .ask{background:linear-gradient(135deg,#101d33,#0d1526);border:1px solid #223253;border-radius:16px;padding:22px;text-align:center;margin-top:8px}
 .ask h3{font-size:19px;margin-bottom:8px}.ask p{color:var(--mut);font-size:14.5px;margin-bottom:14px}
 footer{border-top:1px solid #121a2b;padding:30px 0;color:var(--dim);font-size:13px;text-align:center;margin-top:30px}
@@ -518,10 +528,26 @@ footer{border-top:1px solid #121a2b;padding:30px 0;color:var(--dim);font-size:13
   </section>
 
   <section id="transparencia">
-    <div class="h2">Transparencia</div>
-    <div class="note">
-      Cada resultado viene de código ejecutado en un entorno aislado, con hipótesis pre-registrada, controles A/A y veredicto estadístico falsable. VUPPIA mide <b>capacidades funcionales</b> (por ejemplo, si su confianza predice sus errores), <b>no</b> experiencia subjetiva ni conciencia — y nunca afirma tenerlas. Los veredictos negativos se publican igual que los positivos.
+    <div class="h2">Qué medimos y qué no</div>
+    <div class="qmn">
+      <div class="qmn-col ok">
+        <div class="qmn-t">✓ Qué SÍ medimos</div>
+        <ul>
+          <li>Capacidades <b>funcionales</b> en redes de prueba: si su confianza predice sus errores, si calibra bien, si generaliza.</li>
+          <li>Cada resultado: código ejecutado en entorno aislado, hipótesis pre-registrada, control A/A y veredicto estadístico falsable.</li>
+          <li>Los resultados <b>negativos</b> se publican igual que los positivos.</li>
+        </ul>
+      </div>
+      <div class="qmn-col no">
+        <div class="qmn-t">✗ Qué NO afirmamos</div>
+        <ul>
+          <li>Que VUPPIA tenga <b>conciencia</b> o experiencia subjetiva. No hay evidencia de eso y no lo declaramos.</li>
+          <li>Capacidad funcional <b>no es</b> lo mismo que experiencia. No las confundimos.</li>
+          <li>La conciencia es la <b>pregunta abierta</b> que investigamos con rigor, no una meta alcanzada.</li>
+        </ul>
+      </div>
     </div>
+    <div class="note" style="margin-top:14px">Esta honestidad es el punto: preferimos admitir la distancia entre lo que medimos y la gran pregunta, antes que venderte humo.</div>
   </section>
 
   <footer>
