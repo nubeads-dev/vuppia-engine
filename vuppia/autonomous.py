@@ -269,6 +269,18 @@ def tick(store: Store, cfg: dict) -> dict:
                         did['actions'].append({'auto_rollback': skill, 'to': mon.get('rolled_back_to')})
                 except Exception as exc:               # noqa: BLE001
                     did['errors'].append(f'monitor {skill}: ' + repr(exc)[:120])
+        # 3b-quad) AUTO-APLICACIÓN de bajo riesgo (apagada por defecto; se activa con
+        # VUPPIA_AUTOAPPLY=1, autorización previa del operador). Si una mejora de scoring
+        # verificada está en lab por delante de producción, la aplica SOLA a producción.
+        # Lo crítico/arquitectura NUNCA pasa por acá: eso siempre exige firma.
+        if os.getenv('VUPPIA_AUTOAPPLY') == '1' and _ntick % 4 == 0:
+            for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
+                try:
+                    ap = evolve.auto_apply(store, skill)
+                    if ap.get('status') == 'aplicado':
+                        did['actions'].append({'auto_apply': skill, 'to': (ap.get('promoted_to_production') or '')[:12]})
+                except Exception as exc:               # noqa: BLE001
+                    did['errors'].append(f'autoapply {skill}: ' + repr(exc)[:120])
         # 3b-bis) Estudio sobre el MODELO REAL (protocolos LLM): caro (muchas llamadas), así que
         # ocasional — 1 de cada 8 ticks. Así VUPPIA se estudia a sí misma sin trabar el motor.
         _subj = from_env(store, 'subject')

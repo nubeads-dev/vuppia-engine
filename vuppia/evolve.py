@@ -285,6 +285,65 @@ def promote_production(store: Store, skill: str, sha: str, approval_token: str) 
     return {'promoted_to_production': full, 'prev_sha': prev, 'approval_nonce': payload['nonce']}
 
 
+# Skills de BAJO RIESGO: funciones de scoring puras, evaluadas en sandbox, que no pueden
+# tocar infraestructura, red ni archivos. Son las únicas que el motor puede auto-aplicar a
+# producción SIN firma, y solo si VUPPIA_AUTOAPPLY=1 (autorización previa del operador).
+LOW_RISK_SKILLS = ('hypothesis', 'memory_rank')
+
+
+def promote_production_auto(store: Store, skill: str, sha: str, reason: str) -> dict:
+    """Promoción AUTOMÁTICA a producción, SIN firma, SOLO para skills de bajo riesgo y SOLO
+    cuando el operador la pre-autorizó (VUPPIA_AUTOAPPLY=1). Registra la versión anterior
+    para el rollback. Lo crítico/arquitectura NO pasa por acá: eso siempre exige firma."""
+    if skill not in LOW_RISK_SKILLS:
+        raise ValueError('auto-aplicación solo permitida para skills de bajo riesgo')
+    row = store.one('SELECT sha FROM skill_versions WHERE skill=? AND sha LIKE ?', (skill, sha + '%'))
+    if not row:
+        raise ValueError('versión inexistente')
+    full = row[0]
+    prev_row = store.one("SELECT sha FROM skill_pointers WHERE skill=? AND channel='production'", (skill,))
+    prev = prev_row[0] if prev_row else None
+    if prev == full:
+        return {'promoted_to_production': full, 'prev_sha': prev, 'noop': True}
+    with store.tx() as db:
+        if prev_row:
+            db.execute("UPDATE skill_pointers SET sha=?,updated_at=? WHERE skill=? AND channel='production'",
+                       (full, utc(), skill))
+        else:
+            db.execute("INSERT INTO skill_pointers VALUES(?,'production',?,?)", (skill, full, utc()))
+        store._append_in_tx('promote_production_auto', {'skill': skill, 'sha': full, 'prev_sha': prev,
+                                                        'reason': reason})
+    return {'promoted_to_production': full, 'prev_sha': prev}
+
+
+def auto_apply(store: Store, skill: str) -> dict:
+    """Cierra el ciclo SOLO: si la versión en lab está adelante de producción y, re-evaluada
+    por el juez independiente, MEJORA a la de producción (semilla por defecto) sin regresión,
+    la aplica a producción automáticamente. Bajo riesgo + rollback automático la respaldan."""
+    if skill not in LOW_RISK_SKILLS:
+        return {'skill': skill, 'status': 'no_bajo_riesgo'}
+    lab = store.one("SELECT sha FROM skill_pointers WHERE skill=? AND channel='lab'", (skill,))
+    prod = store.one("SELECT sha FROM skill_pointers WHERE skill=? AND channel='production'", (skill,))
+    lab_sha = lab[0] if lab else None
+    prod_sha = prod[0] if prod else None
+    if not lab_sha or lab_sha == prod_sha:
+        return {'skill': skill, 'status': 'al_dia'}
+    src = store.one('SELECT source FROM skill_versions WHERE skill=? AND sha=?', (skill, lab_sha))
+    if not src:
+        return {'skill': skill, 'status': 'fuente_no_encontrada'}
+    try:
+        analysis = evaluate(store, skill, src[0])       # juez independiente: lab vs incumbente
+    except Exception as exc:                            # noqa: BLE001
+        return {'skill': skill, 'status': 'eval_error', 'error': repr(exc)[:120]}
+    if not analysis.get('improved'):
+        return {'skill': skill, 'status': 'no_mejora', 'worst_regime_delta': analysis.get('worst_regime_delta')}
+    try:
+        res = promote_production_auto(store, skill, lab_sha, reason='autoapply:mejora_verificada')
+        return {'skill': skill, 'status': 'aplicado', **res}
+    except Exception as exc:                            # noqa: BLE001
+        return {'skill': skill, 'status': 'error', 'error': repr(exc)[:120]}
+
+
 def _production_prev(store: Store, skill: str):
     """Versión de producción inmediatamente anterior a la actual, leída de la bitácora."""
     rows = store.q("SELECT body FROM ledger WHERE kind='promote_production' ORDER BY seq DESC LIMIT 50")
