@@ -67,8 +67,12 @@ def classify(text: str) -> str:
         return 'cmd_add'
     if has('consultá otra', 'consulta otra', 'contrastá', 'contrasta', 'otra ia', 'otras ia', 'segunda opinión'):
         return 'cmd_consult_ai'
-    if has('buscá', 'busca ', 'investigá ', 'investiga ', 'sacá tus conclusiones', 'sacá conclusiones',
-           'conseguí información', 'averiguá'):
+    _search_verb = has('buscá', 'busca ', 'buscar', 'buscás', 'busques', 'averiguá', 'averiguar',
+                       'conseguí información', 'conseguir información', 'sacá tus conclusiones', 'sacá conclusiones')
+    _net = has('en internet', 'en la web', 'en google', 'en la red')
+    _investig = has('investigá', 'investiga', 'investigar', 'investigues')
+    _status_q = has('qué investig', 'que investig', 'qué estás', 'que estas', 'en qué andás', 'en que andas')
+    if _search_verb or _net or (_investig and not _status_q):
         return 'cmd_research'
     if has('consciente', 'conciencia', 'sentís', 'sentis', 'experiencia subjetiva', 'tenés sentimientos'):
         return 'consciousness'
@@ -91,9 +95,14 @@ def classify(text: str) -> str:
 def _topic_from(text: str) -> str:
     """Extrae el tema de un comando sacando el verbo inicial."""
     t = re.sub(r'^\s*(sof[ií]a[,:]?\s*)?', '', text, flags=re.I)
-    t = re.sub(r'^(buscá|busca|investigá|investiga|conseguí|averiguá|consultá otra[s]? ia sobre|'
-               r'contrastá|agregá|agrega|sumá|suma|proponé una investigación sobre)\s*', '', t, flags=re.I)
+    t = re.sub(r'^(pod[eé]s\s+|puedes\s+|me\s+pod[eé]s\s+)?'
+               r'(buscar|buscá|busca|buscás|investigar|investigá|investiga|conseguir|conseguí|averiguar|'
+               r'averiguá|consultá otra[s]? ia sobre|contrastá|agregá|agrega|sumá|suma|'
+               r'proponé una investigación sobre)\s*', '', t, flags=re.I)
+    t = re.sub(r'^(en\s+(internet|la\s+web|google|la\s+red)\s+(sobre\s+|de\s+|acerca\s+de\s+)?)', '', t, flags=re.I)
+    t = re.sub(r'\s*(en\s+(internet|la\s+web|google|la\s+red))\s*', ' ', t, flags=re.I)
     t = re.sub(r'\s*(y sac[áa]\s+(tus\s+)?conclusiones|a la agenda)\.?\s*$', '', t, flags=re.I)
+    t = t.strip(' ?.,')
     return t.strip()[:200] or text.strip()[:200]
 
 
@@ -120,6 +129,10 @@ def ask(store: Store, question: str, *, provider=None, verifier=None, online=Fal
         answer = done[-1]
     elif intent in ('cmd_research', 'cmd_consult_ai') and allow_actions:
         answer = _cmd_research(store, question, intent, provider, verifier, online, done, proposed, needs)
+    elif intent == 'cmd_research':
+        # Chat público (solo lectura): no busca en vivo, pero encola el tema para que el
+        # motor autónomo lo investigue EN INTERNET en su próxima corrida online.
+        answer = _queue_research(store, question, done)
     elif intent == 'consciousness':
         answer = ('Todavía no, y soy honesta con eso: no tengo ninguna evidencia de ser consciente, y hoy '
                   'no existe una prueba que pueda demostrarlo. Pero esa es justamente la pregunta que me '
@@ -156,6 +169,31 @@ def _cmd_agenda(store, question, state, done, proposed) -> str:
                             'El motor la va a tomar primero.')
     return ' '.join(done) if done else ('Decime el id de la investigación (por ejemplo "suspendé 3" '
                                         'o "priorizá 5"). Mirá la agenda con una consulta de estado.')
+
+
+def _queue_research(store, question, done) -> str:
+    """Encola un pedido de búsqueda a la agenda real. El motor autónomo sale a internet
+    (research online) en su próxima corrida; el chat no busca en vivo, y lo decimos claro."""
+    topic = _topic_from(question)
+    if not topic or len(topic) < 3:
+        topic = question.strip()[:200]
+    try:
+        row = store.one("SELECT COUNT(*) FROM agenda WHERE status='active' AND origin='user'")
+        n_active = row[0] if row else 0
+        status = 'active' if n_active < 8 else 'proposed'
+        short = topic if len(topic) <= 80 else topic[:77] + '...'
+        aid = agenda.add(store, short, 'Investigar en internet: ' + topic,
+                         status=status, priority=2.5, origin='user')
+        done.append(f'Sumé a mi agenda (id {aid}) investigar en internet: "{short}".')
+        if status == 'active':
+            return (f'Dale. Lo anoté en mi agenda de investigación (id {aid}) y lo voy a buscar '
+                    f'EN INTERNET en una de mis próximas corridas autónomas. Para ser honesta: el chat '
+                    f'no navega en vivo, pero mi motor sí sale a la web, preregistra lo que encuentra y '
+                    f'lo vas a poder ver en mis resultados. ¿Querés que le suba la prioridad para que lo tome ya?')
+        return (f'Lo sumé como propuesta (id {aid}); ya tengo varias búsquedas activas en cola. Apenas se '
+                f'libere un lugar salgo a internet a investigarlo. El chat no busca en vivo, pero el motor sí.')
+    except Exception as exc:                            # noqa: BLE001
+        return f'Quise anotarlo para investigarlo en internet pero falló ({str(exc)[:80]}).'
 
 
 def _cmd_research(store, question, intent, provider, verifier, online, done, proposed, needs) -> str:
