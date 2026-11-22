@@ -55,6 +55,32 @@ def _budget_left(store: Store) -> float:
     return daily_budget() - spent
 
 
+def _self_question(store: Store, proposer):
+    """Curiosidad autónoma: el cerebro inventa UNA pregunta de investigación nueva, falsable,
+    a partir de lo que ya midió, y la agenda como tema activo. Así VUPPIA se pregunta cosas sola."""
+    rows = store.q("SELECT h.question, r.verdict FROM results r JOIN preregistrations p ON r.prereg_id=p.id "
+                   "JOIN hypotheses h ON p.hypothesis_id=h.id ORDER BY r.id DESC LIMIT 8")
+    contexto = '; '.join(f'{q} -> {v}' for q, v in rows) or 'sin resultados aún'
+    existentes = store.q("SELECT topic FROM agenda ORDER BY id DESC LIMIT 15")
+    evitar = '; '.join(t[0] for t in existentes) or '(ninguna)'
+    system = ('Sos VUPPIA, una IA que investiga sus propias capacidades FUNCIONALES (no conciencia). '
+              'Generá UNA sola pregunta de investigación NUEVA, falsable, concreta y medible, distinta de '
+              'lo ya hecho. Sobre redes neuronales, calibración, incertidumbre, generalización, '
+              'metacognición funcional. Respondé SOLO la pregunta, una línea, sin explicación.')
+    user = ('Resultados recientes: ' + contexto + '\nTemas que YA tengo (no repitas): ' + evitar +
+            '\nPregunta nueva:')
+    try:
+        q = proposer.complete(system, user, purpose='self_question', max_tokens=120, temperature=0.9)
+    except Exception:
+        return None
+    q = (q or '').strip().strip('"').split('\n')[0][:200]
+    if len(q) < 8:
+        return None
+    from . import agenda
+    aid = agenda.add(store, q, q, status='active', origin='sofia', priority=1.5)
+    return {'id': aid, 'question': q}
+
+
 def heartbeat(store: Store, state: dict) -> None:
     with store.tx() as db:
         db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('autonomous_heartbeat',?)",
@@ -131,6 +157,15 @@ def tick(store: Store, cfg: dict) -> dict:
                     did['actions'].append({'evolve': skill, 'result': 'presupuesto agotado'}); break
                 except Exception as exc:               # noqa: BLE001
                     did['errors'].append(f'evolve {skill}: ' + repr(exc)[:120])
+        # 3c) Curiosidad autónoma: si hay pocos temas activos, se hace UNA pregunta nueva y la agenda.
+        try:
+            n_active = store.one("SELECT COUNT(*) FROM agenda WHERE status='active'")[0]
+            if n_active < 3:
+                sq = _self_question(store, proposer)
+                if sq:
+                    did['actions'].append({'self_question': sq['id'], 'q': sq['question'][:80]})
+        except Exception as exc:                           # noqa: BLE001
+            did['errors'].append('self_question: ' + repr(exc)[:120])
 
     # 4) Aprender de los resultados para decidir qué sigue (no repetir eternamente).
     try:
