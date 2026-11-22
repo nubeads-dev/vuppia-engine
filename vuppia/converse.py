@@ -254,7 +254,7 @@ def _llm_grounded(provider, question, state, rel) -> str:
     user = ('Pregunta: ' + question + '\n<datos_reales_de_sofia>\n' +
             json.dumps(facts, ensure_ascii=False)[:9000] + '\n</datos_reales_de_sofia>')
     try:
-        return provider.complete(system, user, purpose='converse', max_tokens=700)
+        return provider.complete(system, user, purpose='converse', max_tokens=2500)
     except Exception as exc:                          # noqa: BLE001
         return _structured_answer('status', state) + f'\n(No pude usar el modelo: {str(exc)[:80]})'
 

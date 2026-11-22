@@ -211,6 +211,8 @@ class _OAICompat(Provider):
                 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
         if temperature is not None:
             body['temperature'] = temperature
+        if 'gpt-oss' in self.model:
+            body['reasoning_effort'] = 'low'  # libera tokens para la respuesta y acelera
         headers = {'Authorization': 'Bearer ' + key}
         headers.update(self.EXTRA_HEADERS)
         data = _post(self.API_URL, body, headers)
