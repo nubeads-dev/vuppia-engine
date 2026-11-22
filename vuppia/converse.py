@@ -130,9 +130,9 @@ def ask(store: Store, question: str, *, provider=None, verifier=None, online=Fal
     elif intent in ('cmd_research', 'cmd_consult_ai') and allow_actions:
         answer = _cmd_research(store, question, intent, provider, verifier, online, done, proposed, needs)
     elif intent == 'cmd_research':
-        # Chat público (solo lectura): no busca en vivo, pero encola el tema para que el
-        # motor autónomo lo investigue EN INTERNET en su próxima corrida online.
-        answer = _queue_research(store, question, done)
+        # El chat sale EN VIVO a internet (fuentes científicas, solo lectura) y responde con
+        # fuentes; si la búsqueda en vivo falla, encola el tema para el motor autónomo.
+        answer = _live_research(store, question, provider, fallback, done)
     elif intent == 'consciousness':
         answer = ('Todavía no, y soy honesta con eso: no tengo ninguna evidencia de ser consciente, y hoy '
                   'no existe una prueba que pueda demostrarlo. Pero esa es justamente la pregunta que me '
@@ -169,6 +169,43 @@ def _cmd_agenda(store, question, state, done, proposed) -> str:
                             'El motor la va a tomar primero.')
     return ' '.join(done) if done else ('Decime el id de la investigación (por ejemplo "suspendé 3" '
                                         'o "priorizá 5"). Mirá la agenda con una consulta de estado.')
+
+
+def _live_research(store, question, provider, fallback, done) -> str:
+    """Búsqueda EN VIVO desde el chat: consulta fuentes científicas reales (OpenAlex,
+    Crossref — gratis, solo lectura), sintetiza con el modelo y responde con las fuentes.
+    Queda guardado en la memoria con sus URLs. Si falla, cae a encolar para el motor."""
+    topic = _topic_from(question)
+    if not topic or len(topic) < 3:
+        topic = question.strip()[:200]
+    researcher = provider or fallback
+    try:
+        from . import research
+        res = research.investigate(store, topic, online=True, sources=('openalex', 'crossref'),
+                                   researcher=researcher, max_steps=1, per_source=4)
+    except Exception as exc:                            # noqa: BLE001
+        return ('No pude completar la búsqueda en vivo ahora (' + str(exc)[:70] + '). '
+                + _queue_research(store, question, done))
+    ev = res.get('evidence') or []
+    syn = res.get('synthesis') or {}
+    if not ev:
+        return ('Busqué en vivo en fuentes científicas pero no encontré referencias claras para eso. '
+                + _queue_research(store, question, done))
+    parts = []
+    if syn.get('answer'):
+        parts.append(syn['answer'].strip())
+    else:
+        parts.append(f'Busqué en vivo y encontré {len(ev)} referencias científicas sobre «{topic}»:')
+    src = []
+    for s in ev[:6]:
+        t = (s.get('title') or 'sin título')[:95]
+        u = s.get('url') or ''
+        y = s.get('year')
+        src.append('• ' + t + (f' ({y})' if y else '') + (f' — {u}' if u else ''))
+    parts.append('Fuentes:\n' + '\n'.join(src))
+    parts.append('(Lo busqué en vivo en fuentes científicas y lo guardé en mi memoria con las fuentes. '
+                 'Son resultados de búsqueda, no una verificación independiente ni lectura completa de los papers.)')
+    return '\n\n'.join(parts)
 
 
 def _queue_research(store, question, done) -> str:
