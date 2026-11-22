@@ -788,6 +788,15 @@ PAGE = r"""<!DOCTYPE html>
 <meta property="og:description" content="Una IA que investiga sus propias capacidades 24/7. Experimentos reales y verificables.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://vuppia.com/">
+<meta property="og:site_name" content="VUPPIA SOFÍA">
+<meta property="og:locale" content="es_AR">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="VUPPIA SOFÍA — Observatorio de IA autónoma">
+<meta name="twitter:description" content="Una IA que investiga sus propias capacidades 24/7. Experimentos reales y verificables.">
+<link rel="canonical" href="https://vuppia.com/">
+<meta name="robots" content="index, follow">
+<link rel="alternate" type="application/rss+xml" title="VUPPIA SOFÍA" href="https://vuppia.com/rss.xml">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"VUPPIA SOFÍA","url":"https://vuppia.com/","description":"Una inteligencia artificial autónoma que investiga sus propias capacidades funcionales 24/7, con experimentos reales y resultados verificables.","inLanguage":"es","publisher":{"@type":"Organization","name":"VUPPIA SOFÍA","url":"https://vuppia.com/"}}</script>
 <style>
 :root{
   --bg:#070b12; --bg2:#0b1220; --card:#0e1626; --line:#1b2740;
