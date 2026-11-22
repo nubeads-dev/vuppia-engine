@@ -92,6 +92,10 @@ def plan_rule(store: Store, parent_memory=None, kinds=('simulation',)) -> dict:
                                        {'n_train': 500}, {'epochs': 90}],
         'data_scaling': [{'n_small': 300, 'n_large': 2500}, {'n_small': 150, 'n_large': 4000},
                          {'noise': 0.2}, {'hidden': 64}, {'epochs': 90}],
+        'shift_robustness': [{'shift': 1.0}, {'shift': 0.5}, {'shift': 1.5},
+                             {'shift': 1.0, 'noise': 0.2}, {'shift': 2.0, 'hidden': 64}],
+        'label_noise_robustness': [{'noisy_noise': 0.3}, {'noisy_noise': 0.2},
+                                   {'clean_noise': 0.05, 'noisy_noise': 0.4}, {'n_train': 600}, {'hidden': 64}],
     }
     if protocol in sweeps:
         s = sweeps[protocol]

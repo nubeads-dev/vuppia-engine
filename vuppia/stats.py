@@ -46,8 +46,11 @@ def paired_analysis(test: list[float], control: list[float], *, min_effect: floa
         verdict = 'trivial'
     elif lo > min_effect and p < alpha:
         verdict = 'supported'
+    elif lo > -min_effect and hi < min_effect:
+        verdict = 'trivial'         # IC entero dentro de la banda trivial [-min_effect, min_effect]:
+        #                             significativo pero demasiado chico para importar (así el A/A da nulo)
     elif hi < min_effect:
-        verdict = 'refuted'         # el efecto mínimo relevante quedó excluido
+        verdict = 'refuted'         # el efecto mínimo relevante quedó excluido (efecto negativo real)
     else:
         verdict = 'inconclusive'
     return {'verdict': verdict, 'n_units': n, 'mean_diff': round(mean, 6), 'sd_diff': round(sd, 6),

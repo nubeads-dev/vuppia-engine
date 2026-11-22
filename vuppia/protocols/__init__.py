@@ -106,6 +106,36 @@ PROTOCOLS = {
         'description': ('¿Más datos de entrenamiento mejoran la generalización? Curva de aprendizaje: misma '
                         'red con pocos vs muchos datos, medida en datos no vistos.'),
     },
+    'shift_robustness': {
+        'kind': 'simulation',
+        'files': {'substrate.py': PKG / 'substrate.py', 'proto.py': HERE / 'proto_shift.py'},
+        'entry': 'proto.py',
+        'arms': ['shifted', 'in_dist', 'shifted_b'],
+        'metric': 'Exactitud (en distribución vs con corrimiento)',
+        'higher_is_better': True,
+        'aa_pair': ('shifted', 'shifted_b'),
+        'params': {'noise': (0.0, 0.3, 0.1), 'hidden': (8, 96, 32), 'n_train': (300, 3000, 1000),
+                   'epochs': (10, 120, 50), 'shift': (0.3, 2.0, 1.0)},
+        'int_params': ['hidden', 'n_train', 'epochs'],
+        'sd_guess': 0.03,
+        'description': ('Una red entrenada en distribución, ¿mantiene mayor exactitud en datos propios que '
+                        'bajo corrimiento de covariables? Mide cuánto se degrada fuera de distribución.'),
+    },
+    'label_noise_robustness': {
+        'kind': 'simulation',
+        'files': {'substrate.py': PKG / 'substrate.py', 'proto.py': HERE / 'proto_labelnoise.py'},
+        'entry': 'proto.py',
+        'arms': ['noisy', 'clean', 'noisy_b'],
+        'metric': 'Exactitud en test limpio',
+        'higher_is_better': True,
+        'aa_pair': ('noisy', 'noisy_b'),
+        'params': {'noise': (0.0, 0.2, 0.1), 'hidden': (8, 96, 32), 'n_train': (300, 3000, 1000),
+                   'epochs': (10, 120, 50), 'clean_noise': (0.0, 0.1, 0.0), 'noisy_noise': (0.2, 0.45, 0.3)},
+        'int_params': ['hidden', 'n_train', 'epochs'],
+        'sd_guess': 0.03,
+        'description': ('¿Entrenar con etiquetas ruidosas degrada la generalización frente a entrenar con '
+                        'etiquetas limpias? Misma red, test limpio: mide robustez al ruido de supervisión.'),
+    },
     'llm_verbal_confidence': {
         'kind': 'llm',
         'arms': ['verbal_confidence', 'base_rate'],
