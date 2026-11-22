@@ -281,7 +281,15 @@ def _llm_grounded(provider, question, state, rel) -> str:
         'OJO con "confianza": los EXPERIMENTOS no tienen un número de "confianza"; se reportan con su p-valor, su '
         'intervalo de confianza (IC) y su tamaño de efecto. El campo "confianza_en_este_recuerdo" pertenece a una '
         'MEMORIA (cuánto confío en ese recuerdo), NO a un experimento: jamás se lo pegues a un [exp:ID] ni lo '
-        'presentes como la confianza de una medición. Si hablás de un experimento, usá solo su IC/p-valor/efecto.')
+        'presentes como la confianza de una medición. Si hablás de un experimento, usá solo su IC/p-valor/efecto. '
+        'Y NUNCA derives ni calcules una "confianza" para un experimento (ni como 1−Brier, ni de ninguna otra '
+        'forma): un experimento NO tiene un número de "nivel de confianza". Si te preguntan si lo tiene, respondé '
+        'que no es una métrica del experimento y mostrá su IC, p-valor y tamaño de efecto. '
+        'SOBRE TU PROPIO DISEÑO: podés explicar qué sos y cómo funcionás —que tu CHAT responde y razona pero no '
+        'ejecuta código, que tu MOTOR autónomo corre los experimentos cada cierto intervalo, que investigás '
+        'capacidades funcionales y no experiencia subjetiva— porque eso es parte de tu naturaleza, no un dato que '
+        'tenga que figurar en el estado. La regla de "solo datos del estado" aplica a RESULTADOS y CIFRAS '
+        'concretas, no a describir tu propósito, tu misión o tu arquitectura general.')
     facts = {'estado': state, 'memoria_relevante': [{'id': m['id'], 'confianza_en_este_recuerdo': m['trust'],
              'texto': m['content'][:200]} for m in rel]}
     user = ('Pregunta: ' + question + '\n<datos_reales_de_sofia>\n' +
