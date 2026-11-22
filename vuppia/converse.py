@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 
-from . import agenda, memory
+from . import agenda, memory, reasoning
 from .store import Store, utc
 
 MAX_Q = 2000
@@ -460,15 +460,15 @@ def _llm_grounded(provider, question, state, rel, fallback=None) -> str:
     user = ('Pregunta: ' + question + '\n<datos_reales_de_sofia>\n' +
             json.dumps(facts, ensure_ascii=False)[:9000] + '\n</datos_reales_de_sofia>')
     try:
-        return _answer_in_chunks(provider, system, user)
+        # Capa de razonamiento (router de dificultad + verificador/crítico + cálculo exacto).
+        # Internamente usa _answer_in_chunks como generación base (trozos por minuto +
+        # presupuesto + fallback de modelo). En preguntas fáciles o con cuota baja hace una
+        # sola pasada, igual que antes.
+        return reasoning.deliberate(provider, system, user, question,
+                                    fallback=fallback, generate=_answer_in_chunks)
     except Exception as exc:                          # noqa: BLE001
-        # Si el modelo principal está topado (p. ej. 429 por límite diario), probamos con
-        # el modelo de respaldo (otro balde de cuota) antes de rendirnos.
-        if fallback is not None and getattr(fallback, 'model', None) != getattr(provider, 'model', None):
-            try:
-                return _answer_in_chunks(fallback, system, user)
-            except Exception:                         # noqa: BLE001
-                pass
+        # Si el modelo principal está topado (p. ej. 429 por límite diario) y el fallback
+        # también falla, caemos a la respuesta estructurada desde el estado real.
         return _structured_answer('status', state) + f'\n(No pude usar el modelo: {str(exc)[:80]})'
 
 
