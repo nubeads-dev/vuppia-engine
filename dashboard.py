@@ -432,9 +432,11 @@ def chat(question, ip):
                 db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('chat_active_until',?)", (until,))
         except Exception:
             pass
+        # El chat usa su propio modelo (VUPPIA_CHAT) para no competir por la cuota por
+        # minuto del motor; si no está definido, cae al proposer.
         prov = None
         try:
-            prov = providers.from_env(st, 'proposer')
+            prov = providers.from_env(st, 'chat') or providers.from_env(st, 'proposer')
         except Exception:
             prov = None
         res = converse.ask(st, question, provider=prov, online=False, allow_actions=False)
