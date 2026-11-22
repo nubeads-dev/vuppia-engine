@@ -27,9 +27,12 @@ MAX_RESULTS = 8
 MAX_STEPS = 3
 MAX_QUESTION = 500
 ALLOWED_SOURCES = ('openalex', 'crossref', 'semanticscholar', 'brave')
+# Fuentes de IMPLEMENTACIONES/código (no literatura revisada): para la brecha 3, cuando
+# VUPPIA diseña arquitecturas y busca código de referencia. Aparte de la investigación.
+CODE_SOURCES = ('github', 'huggingface')
 # Hosts que el fetcher tiene permitido tocar. Ninguna redirección puede salir de acá.
 ALLOWED_HOSTS = frozenset({'api.openalex.org', 'api.crossref.org', 'api.semanticscholar.org',
-                           'api.search.brave.com'})
+                           'api.search.brave.com', 'api.github.com', 'huggingface.co'})
 USER_AGENT = 'VuppiaSofia-Research/3.5 (research; contact configured by operator)'
 
 
@@ -158,6 +161,83 @@ def semanticscholar(query: str, limit: int, get: Callable = _get_json) -> list[d
     return out
 
 
+def _get_any(url: str, headers: dict | None = None, timeout: int = 12):
+    """Como _get_json pero acepta objeto O lista (p. ej. Hugging Face devuelve listas)."""
+    host = urllib.parse.urlsplit(url).hostname
+    if urllib.parse.urlsplit(url).scheme != 'https' or host not in ALLOWED_HOSTS:
+        raise ResearchError(f'host no autorizado: {host}')
+    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT, 'Accept': 'application/json',
+                                                **(headers or {})})
+    try:
+        with _OPENER.open(req, timeout=timeout) as response:
+            if urllib.parse.urlsplit(response.geturl()).hostname not in ALLOWED_HOSTS:
+                raise ResearchError('la respuesta terminó en un host no autorizado')
+            data = response.read(MAX_REQUEST_BYTES + 1)
+    except ResearchError:
+        raise
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise ResearchError(f'error consultando fuente: {type(exc).__name__}') from exc
+    if len(data) > MAX_REQUEST_BYTES:
+        raise ResearchError('respuesta supera el límite')
+    try:
+        return json.loads(data)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ResearchError('respuesta JSON inválida') from exc
+
+
+def github(query: str, limit: int, get: Callable = _get_json) -> list[dict]:
+    """Repos de GitHub por relevancia/estrellas: implementaciones de referencia. Sin auth
+    el límite de tasa es bajo (~10/min de búsqueda); si topa, gather sigue con las otras."""
+    url = 'https://api.github.com/search/repositories?' + urllib.parse.urlencode({
+        'q': query, 'per_page': min(limit, 8), 'sort': 'stars', 'order': 'desc'
+    })
+    rows = get(url, headers={'Accept': 'application/vnd.github+json'}).get('items', [])
+    out = []
+    for p in rows[:limit] if isinstance(rows, list) else []:
+        if not isinstance(p, dict):
+            continue
+        link = _https_url(p.get('html_url'))
+        if link:
+            stars = p.get('stargazers_count')
+            out.append({'provider': 'github', 'title': _safe_text(p.get('full_name')), 'url': link,
+                        'year': None, 'stars': stars,
+                        'snippet': _safe_text(p.get('description'), 400), 'query': query})
+    return out
+
+
+def huggingface(query: str, limit: int, get: Callable = _get_any) -> list[dict]:
+    """Modelos de Hugging Face por relevancia: qué modelos existen para una tarea."""
+    url = 'https://huggingface.co/api/models?' + urllib.parse.urlencode({
+        'search': query, 'limit': min(limit, 8), 'sort': 'downloads', 'direction': '-1'
+    })
+    rows = get(url)
+    out = []
+    for p in (rows[:limit] if isinstance(rows, list) else []):
+        if not isinstance(p, dict):
+            continue
+        mid = _safe_text(p.get('id') or p.get('modelId'), 180)
+        if mid:
+            tags = p.get('pipeline_tag') or ''
+            out.append({'provider': 'huggingface', 'title': mid,
+                        'url': 'https://huggingface.co/' + urllib.parse.quote(mid, safe='/-_.'),
+                        'year': None, 'downloads': p.get('downloads'),
+                        'snippet': _safe_text(tags, 120), 'query': query})
+    return out
+
+
+def code_search(query: str, limit: int = 5) -> dict:
+    """Busca IMPLEMENTACIONES (GitHub) y MODELOS (Hugging Face) para un tema. Para la brecha 3:
+    cuando VUPPIA diseña una arquitectura, acá encuentra código de referencia. Solo lectura,
+    sin key. No es literatura revisada: es código, más ruidoso, se trata como dato."""
+    results, errors = [], []
+    for name, fn, getter in (('github', github, _get_json), ('huggingface', huggingface, _get_any)):
+        try:
+            results.extend(fn(query, limit, getter))
+        except Exception as exc:                        # noqa: BLE001
+            errors.append({'source': name, 'error': str(exc)[:160]})
+    return {'query': query, 'results': results, 'errors': errors}
+
+
 def brave(query: str, limit: int, get: Callable = _get_json) -> list[dict]:
     """Búsqueda web general, SOLO si BRAVE_SEARCH_API_KEY se configuró en el host."""
     key = os.getenv('BRAVE_SEARCH_API_KEY')
@@ -180,7 +260,7 @@ def brave(query: str, limit: int, get: Callable = _get_json) -> list[dict]:
     return out
 
 
-ADAPTERS = {'openalex': openalex, 'crossref': crossref, 'semanticscholar': semanticscholar, 'brave': brave}
+ADAPTERS = {'openalex': openalex, 'crossref': crossref, 'semanticscholar': semanticscholar, 'github': github, 'huggingface': huggingface, 'brave': brave}
 
 
 def gather(query: str, *, sources=('openalex', 'crossref'), per_source=4,
