@@ -210,7 +210,7 @@ _CRITIC_SYSTEM = (
     'respaldado, respondé EXACTAMENTE "SIN ERRORES" y nada más.')
 
 
-def deliberate(provider, system, user, question, *, fallback=None, generate):
+def deliberate(provider, system, user, question, *, fallback=None, generate, force_hard=False):
     """Orquesta las arquitecturas de razonamiento sobre el motor de respuesta del chat.
 
     generate(provider, system, user, chunk=...) es la generación base del chat
@@ -239,7 +239,8 @@ def deliberate(provider, system, user, question, *, fallback=None, generate):
 
     plan = assess(question)
     # Pregunta facil, razonamiento apagado, o cuota baja -> una sola pasada (costo de hoy).
-    if not enabled() or plan['tier'] == 'easy' or not _quota_ok():
+    # force_hard (banco A/B) saltea el gate para medir el verificador siempre.
+    if not force_hard and (not enabled() or plan['tier'] == 'easy' or not _quota_ok()):
         return g(sys_main, user)
 
     # 1+2) Borrador -> critica -> correccion (solo en preguntas dificiles y con cuota).

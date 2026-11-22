@@ -410,7 +410,20 @@ def _structured_answer(intent, state) -> str:
     return '\n'.join(L)
 
 
-def _llm_grounded(provider, question, state, rel, fallback=None) -> str:
+def answer_once(store, question, provider, *, fallback=None, use_layer=True, force_hard=False) -> str:
+    """Para el banco A/B: responde una pregunta por el MISMO camino grounded, con la capa de
+    razonamiento (use_layer=True) o sin ella (baseline de una sola pasada). No escribe en
+    conversations ni compone 'proposed'; devuelve solo el texto de la respuesta."""
+    state = snapshot(store)
+    try:
+        rel = memory.search(store, question, limit=5, rerank_mode='off')
+    except Exception:                                 # noqa: BLE001
+        rel = []
+    return _llm_grounded(provider, question, state, rel, fallback=fallback,
+                         use_layer=use_layer, force_hard=force_hard)
+
+
+def _llm_grounded(provider, question, state, rel, fallback=None, *, use_layer=True, force_hard=False) -> str:
     system = (
         'Sos VUPPIA SOFÍA: un sistema de investigación científica autónomo y permanente. Tu misión es '
         'investigar la naturaleza de la inteligencia y la conciencia: estudiar las teorías científicas '
@@ -463,9 +476,11 @@ def _llm_grounded(provider, question, state, rel, fallback=None) -> str:
         # Capa de razonamiento (router de dificultad + verificador/crítico + cálculo exacto).
         # Internamente usa _answer_in_chunks como generación base (trozos por minuto +
         # presupuesto + fallback de modelo). En preguntas fáciles o con cuota baja hace una
-        # sola pasada, igual que antes.
+        # sola pasada, igual que antes. use_layer=False = baseline puro (para el banco A/B).
+        if not use_layer:
+            return _answer_in_chunks(provider, system, user)
         return reasoning.deliberate(provider, system, user, question,
-                                    fallback=fallback, generate=_answer_in_chunks)
+                                    fallback=fallback, generate=_answer_in_chunks, force_hard=force_hard)
     except Exception as exc:                          # noqa: BLE001
         # Si el modelo principal está topado (p. ej. 429 por límite diario) y el fallback
         # también falla, caemos a la respuesta estructurada desde el estado real.

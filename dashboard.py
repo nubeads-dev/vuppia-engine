@@ -548,6 +548,35 @@ def admin_action(action, tok, args=None):
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
+    # --- Banco A/B de la capa de razonamiento (con vs sin capa, sobre preguntas verificables) ---
+    if action == 'ab_eval':
+        st = None
+        try:
+            st, _ = _admin_store()
+        except Exception as e:
+            return {'ok': False, 'error': f'no puedo abrir la base ({e})'}
+        try:
+            import sys as _sys
+            if '/app' not in _sys.path:
+                _sys.path.insert(0, '/app')
+            from vuppia import providers, ab_bench
+            prov = providers.from_env(st, 'chat') or providers.from_env(st, 'proposer')
+            if prov is None:
+                return {'ok': False, 'error': 'no hay modelo de chat configurado'}
+            fb = None
+            if _os.getenv('GROQ_API_KEY'):
+                alt = 'openai/gpt-oss-20b'
+                if getattr(prov, 'model', None) != alt:
+                    fb = providers.Groq(st, alt)
+            return ab_bench.run(st, prov, fallback=fb)
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            try:
+                st.db.close()
+            except Exception:
+                pass
+
     # --- Agenda: leer y gobernar (prioridad / suspender / activar / aprobar) ---
     if action in ('agenda_list', 'agenda_priority', 'agenda_status'):
         st = None
