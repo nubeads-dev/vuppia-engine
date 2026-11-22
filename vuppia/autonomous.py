@@ -93,12 +93,14 @@ def tick(store: Store, cfg: dict) -> dict:
         except Exception as exc:                       # noqa: BLE001
             did['errors'].append('experimento: ' + repr(exc)[:120])
 
-    # 3) Investigación externa + hipótesis por IA + evolución de código: SOLO con IA y presupuesto.
+    # 3) Investigación externa + hipótesis por IA + evolución de código: con IA y presupuesto,
+    # o con un proveedor GRATUITO (costo real $0: no consume presupuesto, así que no se bloquea en 0).
     proposer = from_env(store, 'proposer')
-    if proposer and _budget_left(store) > 0.02:
+    _free = bool(proposer) and getattr(proposer, 'name', '') in ('groq', 'openrouter', 'gemini')
+    if proposer and (_free or _budget_left(store) > 0.02):
         # 3a-bis) Si hay una investigación priorizada en la agenda y hay online, se busca sobre ESE tema.
         top = agenda.top_active(store)
-        if top and os.getenv('VUPPIA_AUTONOMOUS_ONLINE') == '1' and _budget_left(store) > 0.05:
+        if top and os.getenv('VUPPIA_AUTONOMOUS_ONLINE') == '1' and (_free or _budget_left(store) > 0.05):
             try:
                 from . import research
                 r = research.investigate(store, top['question'] or top['topic'], online=True,
@@ -119,7 +121,7 @@ def tick(store: Store, cfg: dict) -> dict:
         except Exception as exc:                       # noqa: BLE001
             did['errors'].append('ai_experiment: ' + repr(exc)[:120])
         # 3b) un candidato de código evaluado y promovido SOLO a laboratorio.
-        if _budget_left(store) > 0.02 and cfg.get('evolve', True):
+        if (_free or _budget_left(store) > 0.02) and cfg.get('evolve', True):
             for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
                 try:
                     src = evolve.generate_candidate(store, skill, proposer)
