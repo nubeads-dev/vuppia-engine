@@ -401,15 +401,15 @@ section{padding:40px 0}
 .vb.invalid,.vb.trivial{background:#1a2030;color:var(--dim)}
 .exp .q{font-size:14.5px;color:var(--txt);line-height:1.5}
 .exp .m{font-size:12.5px;color:var(--dim);margin-top:5px}
-.chat{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden}
-.clog{padding:18px;min-height:120px;max-height:340px;overflow:auto;display:flex;flex-direction:column;gap:10px}
-.msg{padding:10px 14px;border-radius:12px;font-size:14.5px;max-width:86%;line-height:1.55;white-space:pre-wrap}
-.msg.u{align-self:flex-end;background:#15294a;color:#dcebff}
-.msg.s{align-self:flex-start;background:#0b1424;border:1px solid var(--line);color:var(--txt)}
-.cin{display:flex;gap:8px;padding:14px;border-top:1px solid var(--line);background:#0b1220}
-.cin input{flex:1;background:#0a111e;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:11px 14px;font-size:14.5px;outline:none}
+.chat{background:var(--card);border:1px solid var(--line);border-radius:18px}
+.clog{padding:22px;min-height:70px;display:flex;flex-direction:column;gap:16px}
+.msg{font-size:15.5px;line-height:1.68;white-space:pre-wrap;max-width:100%;word-wrap:break-word}
+.msg.u{align-self:flex-end;background:#15294a;color:#dcebff;padding:12px 16px;border-radius:14px;max-width:85%}
+.msg.s{align-self:stretch;color:var(--txt);padding:14px 16px;background:#0b142466;border-left:2px solid var(--cy);border-radius:0 12px 12px 0}
+.cin{display:flex;gap:10px;padding:16px;border-top:1px solid var(--line)}
+.cin input{flex:1;background:#0a111e;border:1px solid var(--line);color:var(--txt);border-radius:12px;padding:14px 16px;font-size:15.5px;outline:none}
 .cin input:focus{border-color:var(--cy)}
-.cin button{background:linear-gradient(90deg,#1b82c4,#2563a8);color:#fff;border:none;border-radius:10px;padding:0 18px;font-weight:600;cursor:pointer}
+.cin button{background:linear-gradient(90deg,#1b82c4,#2563a8);color:#fff;border:none;border-radius:12px;padding:0 22px;font-weight:600;font-size:15px;cursor:pointer}
 .note{background:#0c1322;border:1px solid var(--line);border-left:3px solid var(--vi);border-radius:12px;padding:16px 18px;color:var(--mut);font-size:14px}
 .ask{background:linear-gradient(135deg,#101d33,#0d1526);border:1px solid #223253;border-radius:16px;padding:22px;text-align:center;margin-top:8px}
 .ask h3{font-size:19px;margin-bottom:8px}.ask p{color:var(--mut);font-size:14.5px;margin-bottom:14px}
