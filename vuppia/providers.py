@@ -86,12 +86,29 @@ class Provider:
             text, tin, tout = self._call(system, user, max_tokens, temperature)
         except Exception as exc:
             self._settle(call_id, None, None, None, 'error', type(exc).__name__ + ': ' + str(exc)[:200], None)
+            self._persist_quota()
             raise
         cost = (tin * pin + tout * pout) / 1e6 if tin is not None else reserve
         # Guardar la respuesta completa (recortada) para auditoría/reproducción aproximada.
         self._settle(call_id, cost, tin, tout, 'ok', None, text[:8000])
+        self._persist_quota()
         self.last_call_id = call_id
         return text
+
+    def _persist_quota(self):
+        """Guarda la última cuota vista (headers x-ratelimit-*) en kv para el panel."""
+        if not _LAST_RL:
+            return
+        try:
+            snap = dict(_LAST_RL)
+            snap['provider'] = self.name
+            snap['model'] = self.model
+            with self.store.tx() as db:
+                db.execute('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
+                db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('provider_quota',?)",
+                           (json.dumps(snap),))
+        except Exception:                               # noqa: BLE001
+            pass
 
     def _record_request(self, call_id, temperature, max_tokens, req_sha, hypothesis_id):
         with self.store.tx() as db:
@@ -129,19 +146,60 @@ class Provider:
         raise NotImplementedError
 
 
+# Última cuota vista en los headers del proveedor (por proceso). Groq/OpenAI-compat
+# devuelven x-ratelimit-* en cada respuesta; los guardamos para mostrarlos en el panel.
+_LAST_RL: dict = {}
+
+
+def _capture_rl(hdrs):
+    try:
+        rl = {}
+        for k in ('limit-requests', 'remaining-requests', 'reset-requests',
+                  'limit-tokens', 'remaining-tokens', 'reset-tokens'):
+            v = hdrs.get('x-ratelimit-' + k)
+            if v is not None:
+                rl[k.replace('-', '_')] = v
+        ra = hdrs.get('retry-after')
+        if ra is not None:
+            rl['retry_after'] = ra
+        if rl:
+            rl['at'] = utc()
+            _LAST_RL.clear()
+            _LAST_RL.update(rl)
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def _retry_after_seconds(hdrs, default):
+    try:
+        ra = hdrs.get('retry-after')
+        if ra is None:
+            return default
+        return min(float(ra), 30.0)
+    except Exception:                                   # noqa: BLE001
+        return default
+
+
 def _post(url: str, payload: dict, headers: dict, timeout=90) -> dict:
     req = urllib.request.Request(url, json.dumps(payload).encode(), method='POST',
                                  headers={'Content-Type': 'application/json', 'User-Agent': 'vuppia-sofia/1.0 (+https://vuppia.com)', **headers})
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
+                _capture_rl(r.headers)
                 raw = r.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise ProviderError('respuesta demasiado grande')
             return json.loads(raw)
         except urllib.error.HTTPError as e:
+            try:
+                _capture_rl(e.headers)
+            except Exception:                           # noqa: BLE001
+                pass
             if e.code in (429, 500, 502, 503, 529) and attempt < 2:
-                time.sleep(2 ** attempt * 3); continue
+                wait = _retry_after_seconds(getattr(e, 'headers', None) or {}, 2 ** attempt * 3) \
+                    if e.code == 429 else 2 ** attempt * 3
+                time.sleep(wait); continue
             raise ProviderError(f'HTTP {e.code}') from e
         except urllib.error.URLError as e:
             raise ProviderError('sin conexión con el proveedor') from e

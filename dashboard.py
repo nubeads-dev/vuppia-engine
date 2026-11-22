@@ -125,6 +125,14 @@ def state():
             cost = round(row[0] or 0.0, 4)
         except Exception:
             pass
+        # cuota del proveedor (headers x-ratelimit-* que guarda providers._persist_quota)
+        quota = None
+        try:
+            qrow = c.execute("SELECT v FROM kv WHERE k='provider_quota'").fetchone()
+            if qrow and qrow[0]:
+                quota = json.loads(qrow[0])
+        except Exception:
+            pass
         return {
             'ok': True,
             'generated_at': now.isoformat(),
@@ -148,6 +156,7 @@ def state():
             'skills': skills,
             'skill_versions_list': skill_versions_list,
             'cost_usd': cost,
+            'provider_quota': quota,
         }
     finally:
         c.close()
@@ -414,6 +423,15 @@ def chat(question, ip):
     except Exception as e:
         return {'answer': f'No puedo abrir la base ahora ({e}).', 'error': True}
     try:
+        # Prioridad de chat: avisa al motor que ceda la cuota de Groq unos segundos.
+        try:
+            from datetime import timedelta
+            until = (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()
+            with st.tx() as db:
+                db.execute('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
+                db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('chat_active_until',?)", (until,))
+        except Exception:
+            pass
         prov = None
         try:
             prov = providers.from_env(st, 'proposer')
@@ -1068,6 +1086,7 @@ button.g{background:#241a33;border-color:#4a3570;color:#c4a9ff}
       <div class="kpi"><div id="k_last" class="n">–</div><div class="l">Último tick</div></div>
     </div>
     <div id="verdicts" class="mut" style="margin-top:10px"></div>
+    <div id="quota" style="margin-top:12px"></div>
   </div>
 
   <div class="card">
@@ -1121,6 +1140,31 @@ function setEngine(st){
   document.getElementById('k_last').textContent=ago(st.age_seconds);
   var v=st.verdicts||{};var parts=Object.keys(v).map(function(k){return k+': '+v[k]});
   document.getElementById('verdicts').textContent=parts.length?('Veredictos — '+parts.join(' · ')):'';
+  renderQuota(st.provider_quota);
+}
+function qbar(rem,lim){
+  rem=Number(rem);lim=Number(lim);
+  if(!isFinite(rem)||!isFinite(lim)||lim<=0)return '';
+  var pct=Math.max(0,Math.min(100,100*rem/lim));
+  var col=pct>40?'#30d158':(pct>15?'#ffcc54':'#ff6b6b');
+  return '<div style="background:#070b12;border-radius:6px;height:7px;overflow:hidden;margin-top:4px">'+
+    '<div style="height:100%;width:'+pct.toFixed(0)+'%;background:'+col+'"></div></div>';
+}
+function renderQuota(q){
+  var box=document.getElementById('quota');
+  if(!q){box.innerHTML='<div class="mut">Cuota del modelo: todavía sin datos (se llena en la próxima llamada a Groq).</div>';return}
+  var prov=esc((q.provider||'groq')+(q.model?(' · '+q.model):''));
+  var ra=q.retry_after?(' <span class="pill suspended">429 · reintentar en '+esc(q.retry_after)+'s</span>'):'';
+  var html='<div class="mut" style="margin-bottom:6px"><b style="color:#e7edf7">Cuota del modelo</b> · '+prov+ra+'</div>';
+  html+='<div class="kpis">';
+  if(q.remaining_requests!=null){
+    html+='<div class="kpi"><div class="l">Requests restantes</div><div class="n" style="font-size:16px">'+esc(q.remaining_requests)+(q.limit_requests?(' / '+esc(q.limit_requests)):'')+'</div>'+qbar(q.remaining_requests,q.limit_requests)+(q.reset_requests?('<div class="l" style="margin-top:3px">reset en '+esc(q.reset_requests)+'</div>'):'')+'</div>';
+  }
+  if(q.remaining_tokens!=null){
+    html+='<div class="kpi"><div class="l">Tokens restantes</div><div class="n" style="font-size:16px">'+esc(q.remaining_tokens)+(q.limit_tokens?(' / '+esc(q.limit_tokens)):'')+'</div>'+qbar(q.remaining_tokens,q.limit_tokens)+(q.reset_tokens?('<div class="l" style="margin-top:3px">reset en '+esc(q.reset_tokens)+'</div>'):'')+'</div>';
+  }
+  html+='</div>';
+  box.innerHTML=html;
 }
 function refresh(){
   fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json()}).then(setEngine).catch(function(){});

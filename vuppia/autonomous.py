@@ -48,6 +48,18 @@ def _stop_requested(cfg) -> bool:
     return Path(cfg['stop_file']).exists()
 
 
+def _chat_active(store: Store) -> bool:
+    """True si alguien está chateando ahora: el motor cede la cuota del modelo al chat."""
+    try:
+        row = store.one("SELECT v FROM kv WHERE k='chat_active_until'")
+        if not row or not row[0]:
+            return False
+        from datetime import datetime as _dt, timezone as _tz
+        return _dt.fromisoformat(row[0]) > _dt.now(_tz.utc)
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def _budget_left(store: Store) -> float:
     from .providers import daily_budget
     spent = store.one("SELECT COALESCE(SUM(COALESCE(cost_usd,reserved_usd)),0) FROM llm_calls "
@@ -123,7 +135,11 @@ def tick(store: Store, cfg: dict) -> dict:
     # o con un proveedor GRATUITO (costo real $0: no consume presupuesto, así que no se bloquea en 0).
     proposer = from_env(store, 'proposer')
     _free = bool(proposer) and getattr(proposer, 'name', '') in ('groq', 'openrouter', 'gemini')
-    if proposer and (_free or _budget_left(store) > 0.02):
+    if proposer and _chat_active(store):
+        # Alguien está chateando: le cedemos la cuota del modelo este tick (el experimento
+        # por regla ya corrió arriba, así que el motor igual avanza sin tocar el LLM).
+        did['actions'].append({'chat_priority': 'cedí la cuota del modelo al chat'})
+    elif proposer and (_free or _budget_left(store) > 0.02):
         _ntick = store.one("SELECT COUNT(*) FROM ledger WHERE kind='autonomous_tick'")[0]
         # 3a-bis) Investigación de un tema de la agenda: pesada (web + LLM), cada 3 ticks.
         top = agenda.top_active(store)
