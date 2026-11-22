@@ -203,6 +203,22 @@ def _live_research(store, question, provider, fallback, done) -> str:
         y = s.get('year')
         src.append('• ' + t + (f' ({y})' if y else '') + (f' — {u}' if u else ''))
     parts.append('Fuentes:\n' + '\n'.join(src))
+    # CONEXIÓN chat ↔ motor: lo que me preguntás entra a mi agenda real. Mi motor lo va a
+    # investigar a fondo (más pasos, verificador) y a derivar de ahí una hipótesis de
+    # auto-mejora de mi arquitectura, como experimento. No queda en una respuesta suelta.
+    fed = False
+    try:
+        row = store.one("SELECT COUNT(*) FROM agenda WHERE status='active'")
+        n_active = row[0] if row else 0
+        status = 'active' if n_active < 12 else 'proposed'
+        agenda.add(store, topic[:80], 'Profundizar (de una charla) para auto-mejora: ' + topic,
+                   status=status, origin='user', priority=2.5)
+        fed = True
+    except Exception:                                   # noqa: BLE001
+        fed = False
+    if fed:
+        parts.append('Además lo enganché con mi motor: lo sumé a mi agenda para investigarlo a fondo '
+                     'y sacar de ahí una mejora concreta de mi arquitectura. Lo vas a ver en mis experimentos.')
     parts.append('(Lo busqué en vivo en fuentes científicas y lo guardé en mi memoria con las fuentes. '
                  'Son resultados de búsqueda, no una verificación independiente ni lectura completa de los papers.)')
     return '\n\n'.join(parts)
