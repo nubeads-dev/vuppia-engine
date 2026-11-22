@@ -278,6 +278,48 @@ def chat(question, ip):
             pass
 
 
+def propose(topic, ip):
+    """Lazo de retroalimentacion: lo que la gente pide aprender entra a la agenda REAL.
+    El motor autonomo toma el item activo de mayor prioridad y lo investiga en su proximo tick."""
+    topic = (topic or '').strip()
+    if not topic:
+        return {'ok': False, 'error': 'Decime un tema o pregunta para investigar.'}
+    if len(topic) > 300:
+        topic = topic[:300]
+    if not _rate_ok(ip):
+        return {'ok': False, 'rate_limited': True, 'error': 'Vas muy rapido. Espera unos segundos.'}
+    import sys
+    if '/app' not in sys.path:
+        sys.path.insert(0, '/app')
+    try:
+        from vuppia.store import Store
+        from vuppia import agenda
+    except Exception as e:
+        return {'ok': False, 'error': f'no disponible ({e})'}
+    try:
+        st = Store('/data/vuppia.sqlite3')
+    except Exception as e:
+        return {'ok': False, 'error': f'no puedo abrir la base ({e})'}
+    try:
+        row = st.one("SELECT COUNT(*) FROM agenda WHERE status='active' AND origin='user'")
+        n_active = row[0] if row else 0
+        status = 'active' if n_active < 6 else 'proposed'
+        short = topic if len(topic) <= 80 else topic[:77] + '...'
+        aid = agenda.add(st, short, topic, status=status, priority=2.0, origin='user')
+        if status == 'active':
+            msg = 'Lo sumé a mi agenda y lo voy a investigar en una de mis próximas corridas.'
+        else:
+            msg = 'Lo sumé a mi agenda como propuesta (ya tengo varias en curso); lo tomo en cuanto se libere un lugar.'
+        return {'ok': True, 'id': aid, 'status': status, 'topic': short, 'message': msg}
+    except Exception as e:
+        return {'ok': False, 'error': f'no pude anotarlo ({e})'}
+    finally:
+        try:
+            st.db.close()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Admin: freno de emergencia (pausa/reanuda el motor via archivo VUPPIA_STOP).
 # Protegido por token (VUPPIA_ADMIN_TOKEN, secreto del host). Solo pausa/reanuda:
@@ -522,8 +564,8 @@ function sendChat(){var i=document.getElementById('q');var q=i.value.trim();if(!
 document.getElementById('send').onclick=sendChat;
 document.getElementById('q').addEventListener('keydown',function(e){if(e.key==='Enter')sendChat();});
 function learn(){var i=document.getElementById('learn');var q=i.value.trim();if(!q)return;i.value='';
- var b=document.getElementById('askbox');b.innerHTML='<h3>¡Gracias! 🙌</h3><p>Anoté tu tema. Lo evalúo y, si es falsable, entra a la agenda de investigación.</p>';
- fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:'Propuesta de tema para investigar: '+q})}).catch(function(){});}
+ var b=document.getElementById('askbox');b.innerHTML='<h3>Anotando… ⏳</h3>';
+ fetch('/api/propose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic:q})}).then(function(r){return r.json();}).then(function(d){b.innerHTML='<h3>'+(d.ok?'¡Sumado a mi agenda! 🧠':'Uy')+'</h3><p>'+(d.message||d.error||'')+(d.ok&&d.id?(' (id '+d.id+')'):'')+'</p>';}).catch(function(){b.innerHTML='<h3>Uy</h3><p>No pude anotarlo ahora.</p>';});}
 document.getElementById('learnbtn').onclick=learn;
 document.getElementById('learn').addEventListener('keydown',function(e){if(e.key==='Enter')learn();});
 </script>
@@ -638,6 +680,15 @@ class H(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({'answer': 'Pregunta inválida.'}).encode(), 'application/json; charset=utf-8')
                 return
             out = chat(question, self._client_ip())
+            self._send(200, json.dumps(out).encode(), 'application/json; charset=utf-8')
+            return
+        if self.path.startswith('/api/propose'):
+            try:
+                topic = self._read_json().get('topic', '')
+            except Exception:
+                self._send(400, json.dumps({'ok': False, 'error': 'inválido'}).encode(), 'application/json; charset=utf-8')
+                return
+            out = propose(topic, self._client_ip())
             self._send(200, json.dumps(out).encode(), 'application/json; charset=utf-8')
             return
         self._send(404, b'not found', 'text/plain')
