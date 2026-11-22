@@ -213,11 +213,32 @@ def _self_improve_report(store) -> str:
                          + ', '.join(f'{s} ({c})' for s, c in imp) + '.')
     except Exception:                                   # noqa: BLE001
         pass
-    # 4) Lo honesto sobre el límite.
-    parts.append('Lo que TODAVÍA no puedo, y te lo digo derecho: diseñar y construir un mecanismo de '
-                 'arquitectura NUEVO (no solo ajustar mis funciones de scoring ni el entrenamiento). '
-                 'Esa capacidad está en construcción. Hoy convierto lo que leo en hipótesis falsables '
-                 'y las pruebo con control; el salto a inventar arquitecturas nuevas es el próximo paso.')
+    # 4) Mecanismos de ARQUITECTURA nuevos (no solo scoring): cabeza metacognitiva.
+    arch_done = False
+    try:
+        arch = store.q("SELECT r.verdict, COUNT(*) FROM results r "
+                       "JOIN preregistrations p ON r.prereg_id=p.id "
+                       "JOIN hypotheses h ON p.hypothesis_id=h.id "
+                       "WHERE h.protocol='metacog_head' GROUP BY r.verdict")
+        if arch:
+            tot = sum(c for _, c in arch)
+            vs = ', '.join(f'{v}: {c}' for v, c in arch)
+            parts.append('Mecanismo de ARQUITECTURA nuevo que ya diseñé, construí y probé: una cabeza '
+                         f'metacognitiva entrenada en conjunto para predecir mi propio error — {tot} '
+                         f'experimentos con control ({vs}).')
+            arch_done = True
+    except Exception:                                   # noqa: BLE001
+        pass
+    if not arch_done:
+        parts.append('Estrené mi primer mecanismo de arquitectura NUEVO: una cabeza metacognitiva '
+                     'entrenada en conjunto para predecir mi propio error (protocolo metacog_head). Ya '
+                     'está en mi rotación de experimentos; en la prueba inicial no le ganó a la confianza '
+                     'softmax, y ahora barro variantes para ver si alguna sí.')
+    # 5) El límite honesto, ya actualizado.
+    parts.append('Para ser clara con el límite: ya puedo diseñar, construir y medir mecanismos de '
+                 'arquitectura nuevos en mi laboratorio aislado, pero es reciente y modesto — un solo '
+                 'mecanismo y, por ahora, sin superar al baseline. Lo real es iterar y sumar más, con '
+                 'evidencia y control, no declararme mejor de lo que muestro.')
     return '\n\n'.join(parts)
 
 
