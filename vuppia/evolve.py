@@ -267,19 +267,86 @@ def promote_production(store: Store, skill: str, sha: str, approval_token: str) 
     full = row[0]
     payload = approval.verify(approval_token, skill, full)   # lanza si firma/ventana/destino fallan
     tid = approval.token_id(approval_token)
+    prev_row = store.one("SELECT sha FROM skill_pointers WHERE skill=? AND channel='production'", (skill,))
+    prev = prev_row[0] if prev_row else None             # versión anterior, para rollback
     with store.tx() as db:
         if db.execute('SELECT 1 FROM approvals_used WHERE token_id=?', (tid,)).fetchone():
             raise ValueError('esta aprobación ya fue usada (anti-replay)')
         db.execute('INSERT INTO approvals_used(token_id,skill,candidate_sha,used_at,nonce,expires) '
                    'VALUES(?,?,?,?,?,?)', (tid, skill, full, utc(), payload['nonce'], payload['expires']))
-        if db.execute('SELECT 1 FROM skill_pointers WHERE skill=? AND channel=?', (skill, 'production')).fetchone():
+        if prev_row:
             db.execute("UPDATE skill_pointers SET sha=?,updated_at=? WHERE skill=? AND channel='production'",
                        (full, utc(), skill))
         else:
             db.execute("INSERT INTO skill_pointers VALUES(?,'production',?,?)", (skill, full, utc()))
-        store._append_in_tx('promote_production', {'skill': skill, 'sha': full,
+        store._append_in_tx('promote_production', {'skill': skill, 'sha': full, 'prev_sha': prev,
                                                    'approval_nonce': payload['nonce']})
-    return {'promoted_to_production': full, 'approval_nonce': payload['nonce']}
+    return {'promoted_to_production': full, 'prev_sha': prev, 'approval_nonce': payload['nonce']}
+
+
+def _production_prev(store: Store, skill: str):
+    """Versión de producción inmediatamente anterior a la actual, leída de la bitácora."""
+    rows = store.q("SELECT body FROM ledger WHERE kind='promote_production' ORDER BY seq DESC LIMIT 50")
+    cur = store.one("SELECT sha FROM skill_pointers WHERE skill=? AND channel='production'", (skill,))
+    cur_sha = cur[0] if cur else None
+    for (body,) in rows:
+        try:
+            ev = json.loads(body)
+        except Exception:                               # noqa: BLE001
+            continue
+        if ev.get('skill') == skill and ev.get('sha') == cur_sha:
+            return ev.get('prev_sha')
+    return None
+
+
+def rollback_production(store: Store, skill: str, reason: str = 'manual') -> dict:
+    """Revierte producción a la versión anterior (o a la semilla si no hay anterior).
+    Es una acción de SEGURIDAD: vuelve a una versión ya probada, por eso NO exige firma."""
+    prev = _production_prev(store, skill)
+    target = prev
+    label = 'version anterior'
+    if not target:
+        # Sin anterior registrada: volver a la semilla (siempre segura).
+        target = register_version(store, skill, seed_source(skill), origin='seed_rollback')
+        label = 'semilla'
+    row = store.one('SELECT sha FROM skill_versions WHERE skill=? AND sha=?', (skill, target))
+    if not row:
+        raise ValueError('versión destino de rollback no registrada')
+    with store.tx() as db:
+        if db.execute("SELECT 1 FROM skill_pointers WHERE skill=? AND channel='production'", (skill,)).fetchone():
+            db.execute("UPDATE skill_pointers SET sha=?,updated_at=? WHERE skill=? AND channel='production'",
+                       (target, utc(), skill))
+        else:
+            db.execute("INSERT INTO skill_pointers VALUES(?,'production',?,?)", (skill, target, utc()))
+        store._append_in_tx('rollback_production', {'skill': skill, 'to': target, 'reason': reason})
+    return {'rolled_back_to': target, 'label': label, 'reason': reason}
+
+
+def monitor_production(store: Store, skill: str) -> dict:
+    """Monitoreo + rollback AUTOMÁTICO: re-evalúa la versión en producción contra la semilla.
+    Si regresó (empeora el peor régimen más allá de la tolerancia), revierte sola y lo registra.
+    Devuelve el diagnóstico. No lanza hacia afuera."""
+    cur = store.one("SELECT sha FROM skill_pointers WHERE skill=? AND channel='production'", (skill,))
+    if not cur or not cur[0]:
+        return {'skill': skill, 'status': 'sin_produccion'}
+    src_row = store.one('SELECT source FROM skill_versions WHERE skill=? AND sha=?', (skill, cur[0]))
+    if not src_row:
+        return {'skill': skill, 'status': 'fuente_no_encontrada'}
+    try:
+        analysis = evaluate(store, skill, src_row[0])   # re-evalúa vs incumbente (semilla por defecto)
+    except Exception as exc:                             # noqa: BLE001
+        return {'skill': skill, 'status': 'eval_error', 'error': repr(exc)[:120]}
+    worst = analysis.get('worst_regime_delta')
+    regressed = (worst is not None and worst < -REGRESSION_TOL)
+    out = {'skill': skill, 'prod_sha': cur[0][:12], 'worst_regime_delta': worst, 'regressed': regressed}
+    if regressed:
+        try:
+            rb = rollback_production(store, skill, reason=f'monitor:regresion({worst:.4f})')
+            out['rolled_back_to'] = rb['rolled_back_to'][:12]
+            out['rollback_label'] = rb['label']
+        except Exception as exc:                        # noqa: BLE001
+            out['rollback_error'] = repr(exc)[:120]
+    return out
 
 
 PROMPTS = {

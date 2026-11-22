@@ -247,6 +247,17 @@ def tick(store: Store, cfg: dict) -> dict:
                     did['actions'].append({'evolve': skill, 'result': 'presupuesto agotado'}); break
                 except Exception as exc:               # noqa: BLE001
                     did['errors'].append(f'evolve {skill}: ' + repr(exc)[:120])
+        # 3b-ter) Monitoreo de PRODUCCIÓN + rollback automático (apagado por defecto; se activa
+        # con VUPPIA_AUTO_ROLLBACK=1). Re-evalúa la versión en producción y, si regresó, vuelve
+        # sola a la versión anterior. Cada 8 ticks para no recargar.
+        if os.getenv('VUPPIA_AUTO_ROLLBACK') == '1' and _ntick % 8 == 0:
+            for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
+                try:
+                    mon = evolve.monitor_production(store, skill)
+                    if mon.get('regressed'):
+                        did['actions'].append({'auto_rollback': skill, 'to': mon.get('rolled_back_to')})
+                except Exception as exc:               # noqa: BLE001
+                    did['errors'].append(f'monitor {skill}: ' + repr(exc)[:120])
         # 3b-bis) Estudio sobre el MODELO REAL (protocolos LLM): caro (muchas llamadas), así que
         # ocasional — 1 de cada 8 ticks. Así VUPPIA se estudia a sí misma sin trabar el motor.
         _subj = from_env(store, 'subject')

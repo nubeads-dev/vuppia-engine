@@ -688,6 +688,65 @@ def admin_action(action, tok, args=None):
                 except Exception:
                     pass
 
+    # --- Registro de PRODUCCIÓN: qué versión corre, desde cuándo, con qué evidencia ---
+    if action == 'prod_registry':
+        try:
+            c = _conn()
+        except Exception as e:
+            return {'ok': False, 'error': f'base no disponible ({e})'}
+        try:
+            out = []
+            for sk in ['hypothesis', 'memory_rank']:
+                pr = None
+                try:
+                    pr = c.execute("SELECT sha,updated_at FROM skill_pointers WHERE skill=? AND channel='production'",
+                                   (sk,)).fetchone()
+                except Exception:
+                    pr = None
+                ev = None
+                if pr:
+                    r = c.execute('SELECT decision,analysis,at FROM skill_evals WHERE skill=? AND candidate_sha=? '
+                                  'ORDER BY id DESC LIMIT 1', (sk, pr[0])).fetchone()
+                    if r:
+                        try:
+                            an = json.loads(r[1]) if r[1] else {}
+                        except Exception:
+                            an = {}
+                        ev = {'decision': r[0], 'candidate_mean': an.get('candidate_mean'),
+                              'incumbent_mean': an.get('incumbent_mean'), 'at_ar': _ar(r[2])}
+                out.append({'skill': sk, 'prod_sha': pr[0] if pr else None,
+                            'since': _ar(pr[1]) if pr else None, 'eval': ev})
+            return {'ok': True, 'production': out, 'auto_rollback': _os.getenv('VUPPIA_AUTO_ROLLBACK') == '1'}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    if action == 'rollback':
+        sk = args.get('skill', '')
+        if sk not in ('hypothesis', 'memory_rank'):
+            return {'ok': False, 'error': 'skill inválida'}
+        st = None
+        try:
+            st, _ = _admin_store()
+            import sys as _s
+            if '/app' not in _s.path:
+                _s.path.insert(0, '/app')
+            from vuppia import evolve as _ev
+            res = _ev.rollback_production(st, sk, reason='manual_panel')
+            return {'ok': True, **res}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            if st is not None:
+                try:
+                    st.db.close()
+                except Exception:
+                    pass
+
     return {'ok': False, 'error': 'acción desconocida'}
 
 
@@ -1117,6 +1176,15 @@ button.g{background:#241a33;border-color:#4a3570;color:#c4a9ff}
     <div id="evo" style="margin-top:6px"><div class="mut">Cargando…</div></div>
     <div class="note">VUPPIA reescribe estas funciones y las evalúa sola en el lab (sandbox, control A/A). <b>Nada pasa a producción sin tu firma.</b> Firmás en tu máquina (la clave privada nunca toca el servidor), pegás el token acá y recién ahí el código aprobado entra a la versión viva. Es de un solo uso y vence.</div>
   </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>Qué corre en producción</b>
+      <span id="rbstate" class="tag"></span>
+    </div>
+    <div id="prodreg" style="margin-top:6px"><div class="mut">Cargando…</div></div>
+    <div class="note">Esta es la versión del código que VUPPIA está usando de verdad, con la evidencia que la aprobó. <b>Volver atrás</b> revierte a la versión anterior (o a la semilla): es una acción de seguridad, no necesita firma. El monitoreo con rollback automático se activa desde el servidor (VUPPIA_AUTO_ROLLBACK).</div>
+  </div>
 </div>
 
 <script>
@@ -1181,6 +1249,7 @@ function refresh(){
   fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json()}).then(setEngine).catch(function(){});
   loadAgenda();
   loadEvo();
+  loadProd();
 }
 function fnum(x){return (x==null)?'–':Number(x).toFixed(4)}
 function loadEvo(){
@@ -1213,6 +1282,27 @@ function loadEvo(){
         evline+actions+signbox+diffbox+'</div>';
     }).join('');
   }).catch(function(){document.getElementById('evo').innerHTML='<div class="mut">No pude cargar la evolución.</div>'});
+}
+function loadProd(){
+  api('prod_registry').then(function(d){
+    var box=document.getElementById('prodreg');
+    if(!d.ok){box.innerHTML='<div class="mut">'+esc(d.error||'error')+'</div>';return}
+    document.getElementById('rbstate').textContent=d.auto_rollback?'rollback automático: ON':'rollback automático: OFF';
+    box.innerHTML=(d.production||[]).map(function(p){
+      var ver=p.prod_sha?('<code>'+esc(p.prod_sha.slice(0,12))+'</code> · desde '+esc(p.since||'')):'<span class="mut">semilla (nada promovido)</span>';
+      var ev=p.eval?('<div class="mut" style="margin-top:3px">evidencia: '+esc(p.eval.decision||'')+' · cand '+fnum(p.eval.candidate_mean)+' vs inc '+fnum(p.eval.incumbent_mean)+' · '+esc(p.eval.at_ar||'')+'</div>'):'';
+      var rb=p.prod_sha?(' <button class="d" onclick="rollback(\''+p.skill+'\')">Volver atrás</button>'):'';
+      return '<div class="it"><div class="row" style="justify-content:space-between">'+
+        '<div style="flex:1;min-width:200px"><div class="tp">'+esc(p.skill)+'</div><div class="mut">'+ver+'</div>'+ev+'</div>'+
+        '<div class="row">'+rb+'</div></div></div>';
+    }).join('');
+  }).catch(function(){document.getElementById('prodreg').innerHTML='<div class="mut">No pude cargar producción.</div>'});
+}
+function rollback(sk){
+  if(!confirm('¿Revertir '+sk+' en producción a la versión anterior?'))return;
+  api('rollback',{skill:sk}).then(function(d){
+    if(d.ok){loadProd();loadEvo()}else{alert(d.error||'no se pudo')}
+  }).catch(function(){alert('error de red')});
 }
 function toggleSign(sk){var e=document.getElementById('sign_'+sk);e.classList.toggle('hid')}
 function evoDiff(sk){
