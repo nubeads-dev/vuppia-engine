@@ -8,8 +8,28 @@ Sin dependencias: solo stdlib (http.server, sqlite3, json).
 import json
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    from zoneinfo import ZoneInfo
+    _AR_TZ = ZoneInfo('America/Argentina/Buenos_Aires')
+except Exception:                                          # pragma: no cover
+    _AR_TZ = timezone(timedelta(hours=-3))
+
+
+def _ar(ts):
+    """Convierte un timestamp UTC de la base a hora argentina (dd/mm/YYYY HH:MM). Nunca lee UTC a ojo."""
+    if not ts:
+        return ''
+    try:
+        d = datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return d.astimezone(_AR_TZ).strftime('%d/%m/%Y %H:%M')
+    except Exception:
+        return str(ts)[:16]
+
 
 DB = '/data/vuppia.sqlite3'
 INTERVAL_S = int(__import__('os').getenv('VUPPIA_INTERVAL', '900'))
@@ -71,7 +91,7 @@ def state():
             except Exception:
                 an = {}
             exps.append({
-                'id': r[0], 'at': r[1], 'verdict': r[2],
+                'id': r[0], 'at': r[1], 'at_ar': _ar(r[1]), 'verdict': r[2],
                 'p_value': an.get('p_value'), 'effect_dz': an.get('effect_size_dz'),
                 'n_units': an.get('n_units'), 'ci': an.get('ci'),
                 'control_mean': an.get('control_mean'), 'test_mean': an.get('test_mean'),
@@ -401,6 +421,7 @@ PAGE = r"""<!DOCTYPE html>
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
+html,body{overflow-x:hidden;max-width:100%}
 body{background:radial-gradient(1200px 700px at 72% -10%,#13233f 0%,var(--bg) 55%);
   color:var(--txt);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
   -webkit-font-smoothing:antialiased;min-height:100vh}
@@ -459,6 +480,26 @@ section{padding:40px 0}
 .note{background:#0c1322;border:1px solid var(--line);border-left:3px solid var(--vi);border-radius:12px;padding:16px 18px;color:var(--mut);font-size:14px}
 .qmn{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media(max-width:640px){.qmn{grid-template-columns:1fr}}
+@media(max-width:560px){
+  .wrap{padding:0 14px}
+  .nav{gap:10px;flex-wrap:wrap;padding:14px 0}
+  .nav .sp{flex-basis:100%;order:3;height:0}
+  .nav a{font-size:13px}
+  .hero{padding:40px 0 26px}
+  .tag{font-size:11.5px;padding:5px 11px}
+  .stats{gap:10px;margin:30px 0 6px}
+  .stat{padding:16px 12px}
+  .stat .n{font-size:24px}
+  section{padding:30px 0}
+  .msg{font-size:15px}
+  .msg.u{max-width:92%}
+  .cin{padding:12px;gap:8px}
+  .cin input{padding:12px 13px;font-size:15px;min-width:0}
+  .cin button{padding:0 16px}
+  .exp{padding:14px}
+  .exp .q{font-size:14px}
+  .btn{padding:11px 18px;font-size:14.5px}
+}
 .qmn-col{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
 .qmn-col.ok{border-left:3px solid var(--gr)}
 .qmn-col.no{border-left:3px solid var(--rd)}
@@ -558,7 +599,7 @@ footer{border-top:1px solid #121a2b;padding:30px 0;color:var(--dim);font-size:13
 
 <script>
 var SAMPLE={experiments:[
- {verdict:'supported',question:'¿La confianza de una red predice en qué casos se equivoca, mejor que el azar?',metric:'AUROC',test_mean:0.63,control_mean:0.50},
+ {id:47,at_ar:'22/11/2026 10:14',verdict:'supported',question:'¿La confianza de una red predice en qué casos se equivoca, mejor que el azar?',metric:'AUROC',test_mean:0.63,control_mean:0.50},
  {verdict:'refuted',question:'¿Un monitor con acceso a los estados internos predice errores mejor que mirando la salida?',metric:'AUROC',test_mean:0.65,control_mean:0.67},
  {verdict:'supported',question:'¿Más datos de entrenamiento mejoran la generalización?',metric:'Exactitud',test_mean:0.80,control_mean:0.72},
  {verdict:'inconclusive',question:'¿Una red más ancha generaliza mejor que una angosta?',metric:'Exactitud',test_mean:0.74,control_mean:0.78}
@@ -576,7 +617,8 @@ function render(st){
    var v2=(e.verdict||'').toLowerCase();
    var d=document.createElement('div');d.className='exp';
    var mean=(e.test_mean!=null&&e.control_mean!=null)?('test '+(+e.test_mean).toFixed(3)+' vs control '+(+e.control_mean).toFixed(3)):'';
-   d.innerHTML='<span class="vb '+v2+'">'+esc(e.verdict||'')+'</span><div><div class="q">'+esc(e.question||e.statement||'Experimento')+'</div><div class="m">'+esc(e.metric||'')+(mean?' · '+mean:'')+'</div></div>';
+   var meta=(e.id?('#'+e.id):'')+(e.at_ar?(' · '+esc(e.at_ar)):'');
+   d.innerHTML='<span class="vb '+v2+'">'+esc(e.verdict||'')+'</span><div><div class="q">'+esc(e.question||e.statement||'Experimento')+'</div><div class="m">'+(meta?meta+'<br>':'')+esc(e.metric||'')+(mean?' · '+mean:'')+'</div></div>';
    el.appendChild(d);
  });
  if(!(st.experiments||[]).length)el.innerHTML='<div class="spin">Sin experimentos para mostrar todavía.</div>';

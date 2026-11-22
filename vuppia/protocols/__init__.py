@@ -141,7 +141,7 @@ PROTOCOLS = {
         'arms': ['verbal_confidence', 'base_rate'],
         'metric': 'Brier del pronóstico de acierto (menor es mejor)',
         'higher_is_better': False,
-        'params': {'n_items': (6, 60, 8), 'max_digits': (2, 6, 4)},
+        'params': {'n_items': (4, 40, 6), 'max_digits': (2, 6, 4)},
         'int_params': ['n_items', 'max_digits'],
         'sd_guess': 0.15,
         'description': ('¿La confianza verbal del modelo sujeto predice sus aciertos mejor que una tasa '
@@ -152,7 +152,7 @@ PROTOCOLS = {
         'arms': ['self_predicts_self', 'other_predicts_self'],
         'metric': 'Exactitud al predecir una propiedad de la respuesta del sujeto',
         'higher_is_better': True,
-        'params': {'n_items': (6, 60, 8)},
+        'params': {'n_items': (4, 40, 6)},
         'int_params': ['n_items'],
         'sd_guess': 0.45,
         'description': ('Diseño tipo "Looking Inward" (Binder et al., 2024): ¿el modelo predice su propia '

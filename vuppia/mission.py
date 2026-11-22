@@ -175,7 +175,7 @@ def _assemble(store, protocol, origin, params, test, control, *, question, state
     min_effect = max(spec['sd_guess'] * 0.4, 0.01)
     n_units = min(required_units(spec['sd_guess'], min_effect), 24)
     if spec['kind'] == 'llm':
-        n_units = min(n_units, 5)   # cada unidad LLM son muchas llamadas al modelo real: mantener chico
+        n_units = min(n_units, 3)   # cada unidad LLM son muchas llamadas al modelo real: mantener chico
     fp = protocol_fingerprint(protocol)
     record = {'protocol': protocol, 'protocol_fingerprint': fp, 'kind': spec['kind'],
               'test_arm': test, 'control_arm': control, 'params': params,

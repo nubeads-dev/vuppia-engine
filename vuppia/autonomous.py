@@ -124,9 +124,10 @@ def tick(store: Store, cfg: dict) -> dict:
     proposer = from_env(store, 'proposer')
     _free = bool(proposer) and getattr(proposer, 'name', '') in ('groq', 'openrouter', 'gemini')
     if proposer and (_free or _budget_left(store) > 0.02):
-        # 3a-bis) Si hay una investigación priorizada en la agenda y hay online, se busca sobre ESE tema.
+        _ntick = store.one("SELECT COUNT(*) FROM ledger WHERE kind='autonomous_tick'")[0]
+        # 3a-bis) Investigación de un tema de la agenda: pesada (web + LLM), cada 3 ticks.
         top = agenda.top_active(store)
-        if top and os.getenv('VUPPIA_AUTONOMOUS_ONLINE') == '1' and (_free or _budget_left(store) > 0.05):
+        if top and os.getenv('VUPPIA_AUTONOMOUS_ONLINE') == '1' and _ntick % 3 == 0 and (_free or _budget_left(store) > 0.05):
             try:
                 from . import research
                 r = research.investigate(store, top['question'] or top['topic'], online=True,
@@ -146,8 +147,8 @@ def tick(store: Store, cfg: dict) -> dict:
             did['actions'].append({'ai_experiment': 'presupuesto agotado'})
         except Exception as exc:                       # noqa: BLE001
             did['errors'].append('ai_experiment: ' + repr(exc)[:120])
-        # 3b) un candidato de código evaluado y promovido SOLO a laboratorio.
-        if (_free or _budget_left(store) > 0.02) and cfg.get('evolve', True):
+        # 3b) un candidato de código evaluado y promovido SOLO a laboratorio: pesado (2x4000 tokens), cada 4 ticks.
+        if (_free or _budget_left(store) > 0.02) and cfg.get('evolve', True) and _ntick % 4 == 0:
             for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
                 try:
                     src = evolve.generate_candidate(store, skill, proposer)
@@ -162,8 +163,7 @@ def tick(store: Store, cfg: dict) -> dict:
         _subj = from_env(store, 'subject')
         if _subj:
             try:
-                ntick = store.one("SELECT COUNT(*) FROM ledger WHERE kind='autonomous_tick'")[0]
-                if ntick % 8 == 0:
+                if _ntick % 12 == 0:
                     lplan = mission.plan_rule(store, kinds=('llm',))
                     mission.preregister(store, lplan['id'])
                     lres = mission.execute(store, lplan['id'], subject=_subj)
