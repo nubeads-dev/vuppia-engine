@@ -149,6 +149,7 @@ def state():
                 'skill_versions': _count(c, 'skill_versions'),
                 'llm_calls': _count(c, 'llm_calls'),
                 'articles': _count(c, 'articles'),
+                'research_runs': _count(c, 'research_runs'),
             },
             'verdicts': verdicts,
             'experiments': exps,
@@ -914,6 +915,7 @@ footer{border-top:1px solid #121a2b;padding:30px 0;color:var(--dim);font-size:13
       <div class="stat"><div class="n c-rd" id="s-ref">—</div><div class="l">Refutados</div></div>
       <div class="stat"><div class="n c-am" id="s-cost">$0</div><div class="l">Costo total</div></div>
     </div>
+    <div id="breakdown" style="color:var(--dim);font-size:13px;line-height:1.9;margin:4px 0 8px;text-align:center"></div>
   </header>
 
   <section id="chat">
@@ -987,6 +989,17 @@ function render(st){
  document.getElementById('s-sup').textContent=v.supported||0;
  document.getElementById('s-ref').textContent=v.refuted||0;
  document.getElementById('s-cost').textContent='$'+((st.cost_usd||0).toFixed? (st.cost_usd).toFixed(2):st.cost_usd||0);
+ var c=st.counts||{};
+ var bd=[];
+ if(v.inconclusive)bd.push(v.inconclusive+' inconcluyentes');
+ if(v.trivial)bd.push(v.trivial+' triviales');
+ if(c.research_runs)bd.push(c.research_runs+' investigaciones online');
+ if(c.hypotheses)bd.push(c.hypotheses+' hipótesis');
+ if(c.articles)bd.push(c.articles+' artículos');
+ if(c.memories)bd.push(c.memories+' memorias');
+ if(c.skill_versions)bd.push(c.skill_versions+' versiones de código');
+ var be=document.getElementById('breakdown');
+ if(be)be.textContent=bd.length?('También: '+bd.join(' · ')):'';
  var el=document.getElementById('explist');el.innerHTML='';
  (st.experiments||[]).slice(0,6).forEach(function(e){
    var v2=(e.verdict||'').toLowerCase();
