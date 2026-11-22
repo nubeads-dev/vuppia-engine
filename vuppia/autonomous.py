@@ -239,14 +239,25 @@ def tick(store: Store, cfg: dict) -> dict:
         # 3b) un candidato de código evaluado y promovido SOLO a laboratorio: pesado (2x4000 tokens), cada 4 ticks.
         if (_free or _budget_left(store) > 0.02) and cfg.get('evolve', True) and _ntick % 4 == 0:
             for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
+                promoted = False
                 try:
                     src = evolve.generate_candidate(store, skill, proposer)
                     r = evolve.promote_lab(store, skill, src)
-                    did['actions'].append({'evolve': skill, 'promoted_to_lab': r['promoted']})
+                    promoted = bool(r.get('promoted'))
+                    did['actions'].append({'evolve': skill, 'promoted_to_lab': promoted})
                 except BudgetExceeded:
                     did['actions'].append({'evolve': skill, 'result': 'presupuesto agotado'}); break
                 except Exception as exc:               # noqa: BLE001
                     did['errors'].append(f'evolve {skill}: ' + repr(exc)[:120])
+                # Respaldo: si el LLM no mejoró, probar la mejora de referencia curada.
+                # El juez independiente la evalúa igual; si no mejora, la rechaza.
+                if not promoted:
+                    try:
+                        ref = evolve.try_reference(store, skill)
+                        if ref.get('status') == 'promovido':
+                            did['actions'].append({'evolve_reference': skill, 'promoted_to_lab': True})
+                    except Exception as exc:           # noqa: BLE001
+                        did['errors'].append(f'evolve_ref {skill}: ' + repr(exc)[:120])
         # 3b-ter) Monitoreo de PRODUCCIÓN + rollback automático (apagado por defecto; se activa
         # con VUPPIA_AUTO_ROLLBACK=1). Re-evalúa la versión en producción y, si regresó, vuelve
         # sola a la versión anterior. Cada 8 ticks para no recargar.

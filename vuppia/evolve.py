@@ -365,6 +365,41 @@ PROMPTS = {
 }
 
 
+# Mejoras de REFERENCIA (curadas): cuando el generador LLM no encuentra una mejora, el
+# motor prueba esta versión de referencia. El juez independiente (evaluate) la evalúa igual
+# que cualquier candidato: si no mejora de verdad, la rechaza. Para memory_rank: usa las
+# señales (trust, specificity, contradiction) que la semilla ignora a propósito.
+REFERENCE = {
+    'memory_rank': (
+        'def rank_memories(item):\n'
+        '    overlap = float(item.get("overlap", 0.0))\n'
+        '    recency = float(item.get("recency", 0.0))\n'
+        '    trust = float(item.get("trust", 0.0))\n'
+        '    specificity = float(item.get("specificity", 0.0))\n'
+        '    contradiction = float(item.get("contradiction", 0.0))\n'
+        '    s = 0.45 * overlap + 0.08 * recency + 0.22 * trust + 0.15 * specificity\n'
+        '    s = s * (1.0 - 0.9 * contradiction)\n'
+        '    return max(0.0, min(1.0, s))\n'
+    ),
+}
+
+
+def try_reference(store: Store, skill: str) -> dict:
+    """Prueba la mejora de referencia curada para un skill (respaldo cuando el LLM no mejora).
+    El juez independiente decide; si ya está en lab, no reintenta. No lanza hacia afuera."""
+    src = REFERENCE.get(skill)
+    if not src:
+        return {'skill': skill, 'status': 'sin_referencia'}
+    try:
+        cur_sha, _ = current(store, skill)
+        if sha256(src) == cur_sha:
+            return {'skill': skill, 'status': 'ya_en_lab'}
+        r = promote_lab(store, skill, src)
+        return {'skill': skill, 'status': 'promovido' if r.get('promoted') else 'rechazado', **r}
+    except Exception as exc:                            # noqa: BLE001
+        return {'skill': skill, 'status': 'error', 'error': repr(exc)[:160]}
+
+
 def generate_candidate(store: Store, skill: str, proposer) -> str:
     import json
     spec = skill_spec(skill)
