@@ -112,11 +112,7 @@ def tick(store: Store, cfg: dict) -> dict:
     # 2) Un experimento orientado por la Primera Ley (gratis, en sandbox).
     if cfg.get('experiments', True):
         try:
-            # Si hay un modelo SUJETO configurado, incluir también los protocolos LLM:
-            # así VUPPIA se estudia a SÍ MISMA (al modelo real), no solo a redes de juguete.
-            _subj = from_env(store, 'subject')
-            _kinds = ('simulation', 'llm') if _subj else ('simulation',)
-            plan = mission.plan_rule(store, kinds=_kinds)
+            plan = mission.plan_rule(store)
             mission.preregister(store, plan['id'])
             res = mission.execute(store, plan['id'], subject=from_env(store, 'subject'))
             did['actions'].append({'experiment': plan['id'], 'verdict': res['verdict']})
@@ -161,6 +157,19 @@ def tick(store: Store, cfg: dict) -> dict:
                     did['actions'].append({'evolve': skill, 'result': 'presupuesto agotado'}); break
                 except Exception as exc:               # noqa: BLE001
                     did['errors'].append(f'evolve {skill}: ' + repr(exc)[:120])
+        # 3b-bis) Estudio sobre el MODELO REAL (protocolos LLM): caro (muchas llamadas), así que
+        # ocasional — 1 de cada 8 ticks. Así VUPPIA se estudia a sí misma sin trabar el motor.
+        _subj = from_env(store, 'subject')
+        if _subj:
+            try:
+                ntick = store.one("SELECT COUNT(*) FROM ledger WHERE kind='autonomous_tick'")[0]
+                if ntick % 8 == 0:
+                    lplan = mission.plan_rule(store, kinds=('llm',))
+                    mission.preregister(store, lplan['id'])
+                    lres = mission.execute(store, lplan['id'], subject=_subj)
+                    did['actions'].append({'llm_self_study': lplan['id'], 'verdict': lres['verdict']})
+            except Exception as exc:                       # noqa: BLE001
+                did['errors'].append('llm_self_study: ' + repr(exc)[:120])
         # 3c) Curiosidad autónoma: si hay pocos temas activos, se hace UNA pregunta nueva y la agenda.
         try:
             n_active = store.one("SELECT COUNT(*) FROM agenda WHERE status='active'")[0]
