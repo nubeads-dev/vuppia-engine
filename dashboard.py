@@ -432,14 +432,23 @@ def chat(question, ip):
                 db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('chat_active_until',?)", (until,))
         except Exception:
             pass
-        # El chat usa su propio modelo (VUPPIA_CHAT) para no competir por la cuota por
-        # minuto del motor; si no está definido, cae al proposer.
-        prov = None
+        # El chat usa su propio modelo (VUPPIA_CHAT) para no competir por la cuota del
+        # motor; si no está definido, cae al proposer. Y si el modelo principal está topado
+        # (límite diario de Groq), cae a un modelo de respaldo con otro balde de cuota.
+        prov = fb = None
         try:
             prov = providers.from_env(st, 'chat') or providers.from_env(st, 'proposer')
         except Exception:
             prov = None
-        res = converse.ask(st, question, provider=prov, online=False, allow_actions=False)
+        try:
+            fb = providers.from_env(st, 'chat_fallback')
+            if fb is None and _os.getenv('GROQ_API_KEY'):
+                alt = 'openai/gpt-oss-20b'
+                if getattr(prov, 'model', None) != alt:
+                    fb = providers.Groq(st, alt)
+        except Exception:
+            fb = None
+        res = converse.ask(st, question, provider=prov, online=False, allow_actions=False, fallback=fb)
         return {'answer': res.get('answer', ''), 'intent': res.get('intent'),
                 'proposed': res.get('proposed') or [], 'needs': res.get('needs') or [],
                 'llm': prov is not None}

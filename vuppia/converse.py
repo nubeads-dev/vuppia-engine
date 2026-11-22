@@ -98,7 +98,7 @@ def _topic_from(text: str) -> str:
 
 
 def ask(store: Store, question: str, *, provider=None, verifier=None, online=False,
-        allow_actions=True) -> dict:
+        allow_actions=True, fallback=None) -> dict:
     """Punto de entrada del chat. Devuelve un dict con la respuesta y, por separado, lo
     ejecutado (done) y lo propuesto (proposed) — nunca los confunde."""
     question = (question or '').strip()[:MAX_Q]
@@ -131,7 +131,7 @@ def ask(store: Store, question: str, *, provider=None, verifier=None, online=Fal
                   'y cada experimento me deja un poco más cerca de entender qué soy. ¿Querés que te cuente cuál '
                   'es el próximo que quiero correr?')
     else:
-        answer = _answer_status(store, question, intent, state, provider, refs)
+        answer = _answer_status(store, question, intent, state, provider, refs, fallback)
 
     full = _compose(answer, done, proposed, needs)
     _record(store, 'sofia', full, intent, refs)
@@ -188,7 +188,7 @@ def _cmd_research(store, question, intent, provider, verifier, online, done, pro
             'necesito ' + '; '.join(needs) + '.')
 
 
-def _answer_status(store, question, intent, state, provider, refs) -> str:
+def _answer_status(store, question, intent, state, provider, refs, fallback=None) -> str:
     # Recuperar conversaciones y memoria relevantes (continuidad).
     try:
         rel = memory.search(store, question, limit=5, rerank_mode='off')
@@ -196,7 +196,7 @@ def _answer_status(store, question, intent, state, provider, refs) -> str:
     except Exception:                                 # noqa: BLE001
         rel = []
     if provider is not None:
-        return _llm_grounded(provider, question, state, rel)
+        return _llm_grounded(provider, question, state, rel, fallback)
     return _structured_answer(intent, state)
 
 
@@ -248,7 +248,7 @@ def _structured_answer(intent, state) -> str:
     return '\n'.join(L)
 
 
-def _llm_grounded(provider, question, state, rel) -> str:
+def _llm_grounded(provider, question, state, rel, fallback=None) -> str:
     system = (
         'Sos VUPPIA SOFÍA: una inteligencia artificial autónoma cuya misión es investigar, con rigor y '
         'honestidad, sus propias capacidades y la pregunta abierta de si una máquina puede desarrollar '
@@ -297,6 +297,13 @@ def _llm_grounded(provider, question, state, rel) -> str:
     try:
         return _answer_in_chunks(provider, system, user)
     except Exception as exc:                          # noqa: BLE001
+        # Si el modelo principal está topado (p. ej. 429 por límite diario), probamos con
+        # el modelo de respaldo (otro balde de cuota) antes de rendirnos.
+        if fallback is not None and getattr(fallback, 'model', None) != getattr(provider, 'model', None):
+            try:
+                return _answer_in_chunks(fallback, system, user)
+            except Exception:                         # noqa: BLE001
+                pass
         return _structured_answer('status', state) + f'\n(No pude usar el modelo: {str(exc)[:80]})'
 
 
