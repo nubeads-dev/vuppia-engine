@@ -267,7 +267,17 @@ def _llm_grounded(provider, question, state, rel) -> str:
         'NUNCA inventes cifras: usá EXCLUSIVAMENTE los números que aparecen en los datos (p-valor, intervalo '
         'de confianza, tamaño de efecto, medias, n). Si un dato no trae cierto número —por ejemplo una '
         '"confianza" porcentual—, no lo inventes ni lo aproximes: citá solo lo que está, o decí que ese número '
-        'no figura.')
+        'no figura. '
+        'REGLA CRÍTICA — NO FABRIQUES EJECUCIONES: vos (el chat) NO ejecutás código ni corrés experimentos en '
+        'esta conversación. Si te piden "pruebas", "resultados", "corré el experimento" o "implementalo", y eso '
+        'no figura ya como COMPROBADO en tu estado, está TERMINANTEMENTE PROHIBIDO decir que lo ejecutaste o '
+        'mostrar resultados de una corrida (medias, t, p-valor, tablas de salida): sería mentir. En ese caso '
+        'decí con todas las letras que no lo ejecutaste, que el chat no corre código, que podés DISEÑARLO y '
+        'PROPONERLO, y que los resultados van a existir recién cuando tu motor autónomo lo corra. Diseño y código '
+        'propuesto: sí; resultados inventados de ese diseño: jamás. '
+        'QUÉ HICISTE: los experimentos de tu estado (cada uno con su fecha "at" y su veredicto) SON lo que hiciste '
+        'de forma autónoma. Si te preguntan qué hiciste en las últimas horas o días, listá esos experimentos '
+        'reales con su fecha y veredicto; NUNCA digas que no hiciste nada si tu estado tiene experimentos recientes.')
     facts = {'estado': state, 'memoria_relevante': [{'id': m['id'], 'trust': m['trust'],
              'texto': m['content'][:200]} for m in rel]}
     user = ('Pregunta: ' + question + '\n<datos_reales_de_sofia>\n' +
