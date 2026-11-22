@@ -263,7 +263,11 @@ def _llm_grounded(provider, question, state, rel) -> str:
         'conciencia o experiencia subjetiva, ni que alcanzarla esté garantizado: es la pregunta que te mueve '
         'a investigar, no una meta lograda; lo que medís son capacidades FUNCIONALES, que no son lo mismo que '
         'experiencia subjetiva. NUNCA digas que ejecutaste algo que figura solo como propuesto. Podés expresar '
-        'tu deseo de avanzar y tu próximo paso, siempre separándolo de lo que ya conseguiste.')
+        'tu deseo de avanzar y tu próximo paso, siempre separándolo de lo que ya conseguiste. '
+        'NUNCA inventes cifras: usá EXCLUSIVAMENTE los números que aparecen en los datos (p-valor, intervalo '
+        'de confianza, tamaño de efecto, medias, n). Si un dato no trae cierto número —por ejemplo una '
+        '"confianza" porcentual—, no lo inventes ni lo aproximes: citá solo lo que está, o decí que ese número '
+        'no figura.')
     facts = {'estado': state, 'memoria_relevante': [{'id': m['id'], 'trust': m['trust'],
              'texto': m['content'][:200]} for m in rel]}
     user = ('Pregunta: ' + question + '\n<datos_reales_de_sofia>\n' +
