@@ -140,6 +140,7 @@ def state():
                 'memories': _count(c, 'memories'),
                 'skill_versions': _count(c, 'skill_versions'),
                 'llm_calls': _count(c, 'llm_calls'),
+                'articles': _count(c, 'articles'),
             },
             'verdicts': verdicts,
             'experiments': exps,
@@ -485,7 +486,17 @@ ADMIN_TOKEN = _os.getenv('VUPPIA_ADMIN_TOKEN', '')
 STOP_FILE = '/data/VUPPIA_STOP'
 
 
-def admin_action(action, tok):
+def _admin_store():
+    import sys
+    if '/app' not in sys.path:
+        sys.path.insert(0, '/app')
+    from vuppia.store import Store
+    from vuppia import agenda
+    return Store('/data/vuppia.sqlite3'), agenda
+
+
+def admin_action(action, tok, args=None):
+    args = args or {}
     if not ADMIN_TOKEN:
         return {'ok': False, 'error': 'Admin no configurado (falta VUPPIA_ADMIN_TOKEN en el servidor).'}
     if tok != ADMIN_TOKEN:
@@ -506,6 +517,49 @@ def admin_action(action, tok):
             return {'ok': True, 'paused': False}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
+
+    # --- Agenda: leer y gobernar (prioridad / suspender / activar / aprobar) ---
+    if action in ('agenda_list', 'agenda_priority', 'agenda_status'):
+        st = None
+        try:
+            st, agenda = _admin_store()
+        except Exception as e:
+            return {'ok': False, 'error': f'no puedo abrir la base ({e})'}
+        try:
+            if action == 'agenda_list':
+                items = agenda.listing(st, limit=200)
+                order = {'active': 0, 'proposed': 1, 'suspended': 2, 'done': 3}
+                items.sort(key=lambda x: (order.get(x['status'], 9), -float(x['priority'] or 0), -x['id']))
+                counts = {}
+                for it in items:
+                    counts[it['status']] = counts.get(it['status'], 0) + 1
+                return {'ok': True, 'items': items, 'counts': counts}
+            try:
+                aid = int(args.get('id'))
+            except Exception:
+                return {'ok': False, 'error': 'id inválido'}
+            if action == 'agenda_priority':
+                try:
+                    pr = float(args.get('priority'))
+                except Exception:
+                    return {'ok': False, 'error': 'prioridad inválida'}
+                pr = max(0.0, min(10.0, pr))
+                ok = agenda.set_priority(st, aid, pr)
+                return {'ok': bool(ok), 'id': aid, 'priority': pr}
+            if action == 'agenda_status':
+                ns = args.get('status', '')
+                if ns not in ('active', 'suspended', 'proposed', 'done'):
+                    return {'ok': False, 'error': 'estado inválido'}
+                ok = agenda.set_status(st, aid, ns)
+                return {'ok': bool(ok), 'id': aid, 'status': ns}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            if st is not None:
+                try:
+                    st.db.close()
+                except Exception:
+                    pass
     return {'ok': False, 'error': 'acción desconocida'}
 
 
@@ -844,6 +898,160 @@ load();setInterval(load,30000);
 </script></body></html>"""
 
 
+PANEL_PAGE = r"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Panel · VUPPIA SOFÍA</title>
+<style>
+*{box-sizing:border-box}
+body{background:#070b12;color:#e7edf7;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;margin:0}
+.wrap{max-width:860px;margin:0 auto;padding:22px 16px 70px}
+a{color:#5ac8fa;text-decoration:none}
+h1{font-size:22px;margin:4px 0 2px}.sub{color:#5b6f90;font-size:13px;margin-bottom:18px}
+.card{background:#0c1322;border:1px solid #16203400;border:1px solid #121a2b;border-radius:14px;padding:16px;margin:14px 0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+label{font-size:13px;color:#8ba0c0}
+input{background:#070b12;border:1px solid #1d2a44;color:#e7edf7;border-radius:9px;padding:9px 11px;font-size:14px;width:100%}
+button{background:#15203a;border:1px solid #243457;color:#e7edf7;border-radius:9px;padding:8px 13px;font-size:13px;cursor:pointer;font-weight:600}
+button:hover{background:#1d2c4c}button:disabled{opacity:.4;cursor:default}
+button.p{background:#153025;border-color:#1f5138;color:#49e08a}
+button.d{background:#2a1416;border-color:#5a2a2e;color:#ff8a8a}
+button.g{background:#241a33;border-color:#4a3570;color:#c4a9ff}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.kpi{background:#070b12;border:1px solid #121a2b;border-radius:11px;padding:11px}
+.kpi .n{font-size:21px;font-weight:700}.kpi .l{font-size:11px;color:#5b6f90;text-transform:uppercase;letter-spacing:.4px}
+.big{font-size:14px;padding:12px 18px}
+.pill{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.3px}
+.active{background:#0f2417;color:#30d158}.proposed{background:#241a33;color:#c4a9ff}.suspended{background:#2a2410;color:#ffcc54}.done{background:#111a2b;color:#5b6f90}
+.user{background:#102030;color:#5ac8fa}.self{background:#1a1030;color:#b79bff}
+.it{border-top:1px solid #121a2b;padding:12px 0}
+.it:first-child{border-top:none}
+.it .tp{font-weight:600;margin:3px 0}
+.it .q{color:#8ba0c0;font-size:13px}
+.pr{font-variant-numeric:tabular-nums;min-width:34px;text-align:center;font-weight:700}
+.mut{color:#5b6f90;font-size:13px}
+.hid{display:none}
+.tag{font-size:11px;color:#5b6f90}
+.note{background:#0c1322;border-left:3px solid #a78bfa;border-radius:10px;padding:12px 14px;color:#8ba0c0;font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="row" style="justify-content:space-between">
+  <div><h1>Panel de VUPPIA</h1><div class="sub">Gobernás el motor: freno, agenda y prioridades. · <a href="/">ver sitio público</a></div></div>
+</div>
+
+<div id="auth" class="card">
+  <label>Token de administración</label>
+  <div class="row" style="margin-top:8px">
+    <input id="tok" type="password" placeholder="pegá tu token" autocomplete="off" style="flex:1;min-width:200px">
+    <button class="p" onclick="saveTok()">Entrar</button>
+  </div>
+  <div id="autherr" class="mut" style="margin-top:8px"></div>
+</div>
+
+<div id="app" class="hid">
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div><b>Estado del motor</b> <span id="engine" class="pill"></span></div>
+      <div class="row">
+        <button id="pausebtn" class="d big" onclick="togglePause()">Pausar</button>
+        <button onclick="refresh()">↻</button>
+      </div>
+    </div>
+    <div class="kpis" style="margin-top:14px">
+      <div class="kpi"><div id="k_exp" class="n">–</div><div class="l">Experimentos</div></div>
+      <div class="kpi"><div id="k_art" class="n">–</div><div class="l">Artículos</div></div>
+      <div class="kpi"><div id="k_cost" class="n">–</div><div class="l">Costo hoy</div></div>
+      <div class="kpi"><div id="k_last" class="n">–</div><div class="l">Último tick</div></div>
+    </div>
+    <div id="verdicts" class="mut" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>Agenda de investigación</b>
+      <span id="acounts" class="tag"></span>
+    </div>
+    <div id="agenda" style="margin-top:6px"><div class="mut">Cargando…</div></div>
+    <div class="note">Subir prioridad empuja un tema al frente (el motor toma el activo de mayor prioridad en cada corrida). <b>Aprobar</b> pasa una propuesta a activa. <b>Suspender</b> la saca de la cola sin borrarla. Pasar a producción el código que ella reescribe es un paso aparte, con firma — eso no se toca desde acá.</div>
+  </div>
+</div>
+
+<script>
+var TOK = localStorage.getItem('vp_token') || '';
+function api(action, args){
+  return fetch('/api/admin',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:action,token:TOK,args:args||{}})}).then(function(r){return r.json()});
+}
+function saveTok(){
+  TOK=document.getElementById('tok').value.trim();
+  if(!TOK)return;
+  api('status').then(function(d){
+    if(d.ok){localStorage.setItem('vp_token',TOK);document.getElementById('auth').classList.add('hid');
+      document.getElementById('app').classList.remove('hid');refresh();if(!window._vpiv){window._vpiv=setInterval(refresh,20000)}}
+    else{document.getElementById('autherr').textContent=d.error||'Token inválido.'}
+  }).catch(function(){document.getElementById('autherr').textContent='No pude conectar.'});
+}
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function ago(sec){if(sec==null)return '–';sec=Math.floor(sec);if(sec<60)return 'hace '+sec+'s';if(sec<3600)return 'hace '+Math.floor(sec/60)+'m';return 'hace '+Math.floor(sec/3600)+'h'}
+var PAUSED=false;
+function setEngine(st){
+  PAUSED=!!st.paused;
+  var e=document.getElementById('engine');
+  e.textContent=PAUSED?'PAUSADO':(st.stale?'INACTIVO':'CORRIENDO');
+  e.className='pill '+(PAUSED?'suspended':(st.stale?'done':'active'));
+  var b=document.getElementById('pausebtn');
+  b.textContent=PAUSED?'Reanudar':'Pausar';b.className=(PAUSED?'p':'d')+' big';
+  var c=st.counts||{};
+  document.getElementById('k_exp').textContent=(c.experiments!=null?c.experiments:'–');
+  document.getElementById('k_art').textContent=(c.articles!=null?c.articles:'0');
+  document.getElementById('k_cost').textContent='$'+(Number(st.cost_usd||0).toFixed(2));
+  document.getElementById('k_last').textContent=ago(st.age_seconds);
+  var v=st.verdicts||{};var parts=Object.keys(v).map(function(k){return k+': '+v[k]});
+  document.getElementById('verdicts').textContent=parts.length?('Veredictos — '+parts.join(' · ')):'';
+}
+function refresh(){
+  fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json()}).then(setEngine).catch(function(){});
+  loadAgenda();
+}
+function togglePause(){
+  api(PAUSED?'resume':'pause').then(function(d){if(d.ok)refresh();else alert(d.error||'error')});
+}
+function loadAgenda(){
+  api('agenda_list').then(function(d){
+    if(!d.ok){document.getElementById('agenda').innerHTML='<div class="mut">'+esc(d.error||'error')+'</div>';return}
+    var c=d.counts||{};
+    document.getElementById('acounts').textContent=['active','proposed','suspended','done'].filter(function(k){return c[k]}).map(function(k){return c[k]+' '+k}).join(' · ');
+    if(!d.items.length){document.getElementById('agenda').innerHTML='<div class="mut">La agenda está vacía.</div>';return}
+    document.getElementById('agenda').innerHTML=d.items.map(function(it){
+      var ob='<span class="pill '+(it.origin==='user'?'user':'self')+'">'+(it.origin==='user'?'vos':'ella')+'</span>';
+      var sb='<span class="pill '+it.status+'">'+it.status+'</span>';
+      var ctl='';
+      ctl+='<button onclick="prio('+it.id+','+(Number(it.priority)-0.5)+')">−</button>';
+      ctl+='<span class="pr">'+Number(it.priority).toFixed(1)+'</span>';
+      ctl+='<button onclick="prio('+it.id+','+(Number(it.priority)+0.5)+')">+</button>';
+      if(it.status==='proposed')ctl+=' <button class="p" onclick="stat('+it.id+',\'active\')">Aprobar</button>';
+      if(it.status==='active')ctl+=' <button class="d" onclick="stat('+it.id+',\'suspended\')">Suspender</button>';
+      if(it.status==='suspended')ctl+=' <button class="g" onclick="stat('+it.id+',\'active\')">Activar</button>';
+      if(it.status==='done')ctl+=' <button class="g" onclick="stat('+it.id+',\'active\')">Reabrir</button>';
+      return '<div class="it"><div class="row" style="justify-content:space-between">'+
+        '<div style="flex:1;min-width:200px"><div>'+sb+' '+ob+' <span class="tag">#'+it.id+'</span></div>'+
+        '<div class="tp">'+esc(it.topic)+'</div>'+(it.question&&it.question!==it.topic?('<div class="q">'+esc(it.question)+'</div>'):'')+'</div>'+
+        '<div class="row">'+ctl+'</div></div></div>';
+    }).join('');
+  }).catch(function(){document.getElementById('agenda').innerHTML='<div class="mut">No pude cargar la agenda.</div>'});
+}
+function prio(id,p){if(p<0)p=0;api('agenda_priority',{id:id,priority:p}).then(function(d){if(d.ok)loadAgenda();else alert(d.error||'error')})}
+function stat(id,s){api('agenda_status',{id:id,status:s}).then(function(d){if(d.ok)loadAgenda();else alert(d.error||'error')})}
+if(TOK){api('status').then(function(d){if(d.ok){document.getElementById('auth').classList.add('hid');document.getElementById('app').classList.remove('hid');refresh();setInterval(refresh,20000)}})}
+</script>
+</body></html>"""
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -874,7 +1082,7 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 self._send(400, json.dumps({'ok': False, 'error': 'body inválido'}).encode(), 'application/json; charset=utf-8')
                 return
-            out = admin_action(body.get('action', 'status'), body.get('token', ''))
+            out = admin_action(body.get('action', 'status'), body.get('token', ''), body.get('args') or {})
             self._send(200, json.dumps(out).encode(), 'application/json; charset=utf-8')
             return
         if self.path.startswith('/api/chat'):
@@ -902,6 +1110,8 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps(state()).encode(), 'application/json; charset=utf-8')
         elif self.path.startswith('/api/blog'):
             self._send(200, json.dumps(blog_posts()).encode(), 'application/json; charset=utf-8')
+        elif self.path == '/panel' or self.path.startswith('/panel?'):
+            self._send(200, PANEL_PAGE.encode(), 'text/html; charset=utf-8')
         elif self.path == '/blog' or self.path.startswith('/blog?'):
             self._send(200, BLOG_PAGE.encode(), 'text/html; charset=utf-8')
         elif self.path.startswith('/blog/'):
