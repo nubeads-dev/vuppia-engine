@@ -142,6 +142,48 @@ def assess(question: str) -> dict:
     return {'tier': 'hard' if hard else 'easy', 'verify': hard}
 
 
+# --- 2) Protocolos especializados por tipo de tarea (0 llamadas extra) ---
+# Idea aportada por ChatGPT (23/11) y adaptada a VUPPIA: el router ya decide CUÁNTO pensar;
+# acá clasificamos el TIPO de tarea (heurístico, sin otra inferencia) y le damos al modelo una
+# instrucción de estructura adecuada. No reemplaza el router ni las reglas de honestidad: las
+# complementa. Orden importa: compare/decide antes que causal (el "por qué" es muy amplio).
+
+_TASK_MARKERS = (
+    ('compare', ('conviene más', 'conviene mas', 'mejor opción', 'mejor opcion', ' versus ', ' vs ',
+                 'comparación', 'comparacion', 'diferencia entre', 'cuál es mejor', 'cual es mejor',
+                 'ventajas y desv', 'qué es mejor', 'que es mejor')),
+    ('decide', ('debería', 'deberia', 'qué hago', 'que hago', 'me conviene', 'tomar la decisión',
+                'tomar la decision', 'recomendás', 'recomendas', 'qué elijo', 'que elijo',
+                'vale la pena', 'tiene sentido')),
+    ('diagnose', ('por qué falla', 'por que falla', 'qué está mal', 'que esta mal', 'diagnostic',
+                  'no funciona', 'por qué no anda', 'por que no anda', 'cuál es la causa', 'cual es la causa',
+                  'por qué se rompe', 'por que se rompe')),
+    ('causal', ('por qué', 'por que', 'porqué', 'cómo funciona', 'como funciona', 'a qué se debe',
+                'a que se debe', 'explicá por', 'explica por')),
+)
+_PROTOCOLS = {
+    'compare': 'Es una COMPARACIÓN: contrastá las opciones contra criterios explícitos, mostrá dónde '
+               'gana cada una y qué información falta para decidir bien.',
+    'decide': 'Es una DECISIÓN: identificá las opciones, sus riesgos y los criterios, y justificá una '
+              'recomendación condicional (si pasa X, conviene Y). No decidas por el otro lo que es su elección.',
+    'diagnose': 'Es un DIAGNÓSTICO: separá síntomas, hipótesis posibles, la evidencia que tenés, lo que '
+                'todavía NO verificaste, y el próximo paso concreto para confirmar la causa.',
+    'causal': 'Te piden el PORQUÉ: explicá el mecanismo causal paso a paso, no solo describas el qué.',
+}
+
+
+def task_type(question: str) -> str:
+    q = (question or '').lower()
+    for name, markers in _TASK_MARKERS:
+        if any(m in q for m in markers):
+            return name
+    return 'open'
+
+
+def _protocol_for(question: str) -> str:
+    return _PROTOCOLS.get(task_type(question), '')
+
+
 def _quota_ok(min_tokens: float = 3500.0) -> bool:
     """Si el proveedor ya aviso que le quedan pocos tokens por minuto, no encadenamos
     pasadas extra: el verificador se baja solo y se responde en una sola pasada."""
@@ -191,13 +233,17 @@ def deliberate(provider, system, user, question, *, fallback=None, generate):
                        + '\nUsá EXACTAMENTE estos resultados (ya verificados por una calculadora); '
                          'no los recalcules de memoria.\n</calculos_exactos_verificados>')
 
+    # 2) Protocolo de tarea: instrucción de estructura según el tipo (0 llamadas extra).
+    proto = _protocol_for(question)
+    sys_main = system + ('\n<protocolo_de_tarea>\n' + proto + '\n</protocolo_de_tarea>') if proto else system
+
     plan = assess(question)
     # Pregunta facil, razonamiento apagado, o cuota baja -> una sola pasada (costo de hoy).
     if not enabled() or plan['tier'] == 'easy' or not _quota_ok():
-        return g(system, user)
+        return g(sys_main, user)
 
     # 1+2) Borrador -> critica -> correccion (solo en preguntas dificiles y con cuota).
-    draft = g(system, user)
+    draft = g(sys_main, user)
     try:
         crit = g(_CRITIC_SYSTEM, user + '\n<borrador>\n' + (draft or '')[:6000] + '\n</borrador>',
                  chunk=900)
@@ -212,7 +258,7 @@ def deliberate(provider, system, user, question, *, fallback=None, generate):
               'y respetá las mismas reglas de honestidad. Devolvé la respuesta final corregida, '
               'sin mencionar este proceso de revisión.')
     try:
-        final = g(system, revise)
+        final = g(sys_main, revise)
     except Exception:                                   # noqa: BLE001
         return draft
     return (final or '').strip() or draft
