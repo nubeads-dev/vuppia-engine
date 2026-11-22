@@ -60,6 +60,23 @@ def _chat_active(store: Store) -> bool:
         return False
 
 
+def _low_quota(store: Store, floor: int = 4000) -> bool:
+    """True si la cuota de tokens/min del proveedor está por debajo del piso: el motor
+    frena sus llamadas al modelo para dejarle margen al chat (tier gratis tiene poco)."""
+    try:
+        import json as _j
+        row = store.one("SELECT v FROM kv WHERE k='provider_quota'")
+        if not row or not row[0]:
+            return False
+        q = _j.loads(row[0])
+        rem = q.get('remaining_tokens')
+        if rem is None:
+            return False
+        return int(float(rem)) < floor
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def _budget_left(store: Store) -> float:
     from .providers import daily_budget
     spent = store.one("SELECT COALESCE(SUM(COALESCE(cost_usd,reserved_usd)),0) FROM llm_calls "
@@ -139,6 +156,9 @@ def tick(store: Store, cfg: dict) -> dict:
         # Alguien está chateando: le cedemos la cuota del modelo este tick (el experimento
         # por regla ya corrió arriba, así que el motor igual avanza sin tocar el LLM).
         did['actions'].append({'chat_priority': 'cedí la cuota del modelo al chat'})
+    elif proposer and _low_quota(store):
+        # Queda poca cuota por minuto del proveedor: el motor sipea y deja aire para el chat.
+        did['actions'].append({'quota_brake': 'poca cuota del modelo; salteo pasos de LLM este tick'})
     elif proposer and (_free or _budget_left(store) > 0.02):
         _ntick = store.one("SELECT COUNT(*) FROM ledger WHERE kind='autonomous_tick'")[0]
         # 3a-bis) Investigación de un tema de la agenda: pesada (web + LLM), cada 3 ticks.
@@ -195,14 +215,16 @@ def tick(store: Store, cfg: dict) -> dict:
                     did['actions'].append({'self_question': sq['id'], 'q': sq['question'][:80]})
         except Exception as exc:                           # noqa: BLE001
             did['errors'].append('self_question: ' + repr(exc)[:120])
-        # 3e) Blog SEO: 1 artículo por tick para el experimento más nuevo sin artículo (cubre el backlog).
-        try:
-            from . import blog_gen
-            art = blog_gen.generate_one(store, proposer)
-            if art:
-                did['actions'].append({'article': art['result_id'], 'slug': art['slug']})
-        except Exception as exc:                           # noqa: BLE001
-            did['errors'].append('blog: ' + repr(exc)[:120])
+        # 3e) Blog SEO: 1 artículo cada 6 ticks (es pesado ~2200 tok y nada urgente; así
+        # deja cuota por minuto para el chat y el resto del motor). Cubre el backlog igual.
+        if _ntick % 6 == 0:
+            try:
+                from . import blog_gen
+                art = blog_gen.generate_one(store, proposer)
+                if art:
+                    did['actions'].append({'article': art['result_id'], 'slug': art['slug']})
+            except Exception as exc:                       # noqa: BLE001
+                did['errors'].append('blog: ' + repr(exc)[:120])
 
     # 4) Aprender de los resultados para decidir qué sigue (no repetir eternamente).
     try:
