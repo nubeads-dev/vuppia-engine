@@ -179,6 +179,14 @@ def tick(store: Store, cfg: dict) -> dict:
                     did['actions'].append({'self_question': sq['id'], 'q': sq['question'][:80]})
         except Exception as exc:                           # noqa: BLE001
             did['errors'].append('self_question: ' + repr(exc)[:120])
+        # 3e) Blog SEO: 1 artículo por tick para el experimento más nuevo sin artículo (cubre el backlog).
+        try:
+            from . import blog_gen
+            art = blog_gen.generate_one(store, proposer)
+            if art:
+                did['actions'].append({'article': art['result_id'], 'slug': art['slug']})
+        except Exception as exc:                           # noqa: BLE001
+            did['errors'].append('blog: ' + repr(exc)[:120])
 
     # 4) Aprender de los resultados para decidir qué sigue (no repetir eternamente).
     try:

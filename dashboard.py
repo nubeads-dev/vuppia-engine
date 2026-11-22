@@ -172,11 +172,19 @@ def blog_posts(limit=40):
     except Exception:
         return []
     posts = []
+    has_articles = False
     try:
-        q = """SELECT r.id, r.at, r.verdict, r.analysis, r.runtime_s,
-                      h.question, h.statement, h.metric, h.test_arm, h.control_arm, h.origin, r.raw_sha
+        c.execute('SELECT 1 FROM articles LIMIT 1')
+        has_articles = True
+    except Exception:
+        has_articles = False
+    slug_sel = '(SELECT slug FROM articles a WHERE a.result_id=r.id)' if has_articles else 'NULL'
+    try:
+        q = ("""SELECT r.id, r.at, r.verdict, r.analysis, r.runtime_s,
+                      h.question, h.statement, h.metric, h.test_arm, h.control_arm, h.origin, r.raw_sha,
+                      """ + slug_sel + """
                FROM results r JOIN preregistrations p ON r.prereg_id=p.id
-               JOIN hypotheses h ON p.hypothesis_id=h.id ORDER BY r.id DESC LIMIT ?"""
+               JOIN hypotheses h ON p.hypothesis_id=h.id ORDER BY r.id DESC LIMIT ?""")
         for r in c.execute(q, (limit,)):
             try:
                 an = json.loads(r[3]) if r[3] else {}
@@ -191,11 +199,129 @@ def blog_posts(limit=40):
                 'n_units': an.get('n_units'), 'control_mean': an.get('control_mean'),
                 'test_mean': an.get('test_mean'),
                 'verdict_plain': _plain_verdict(r[2]), 'raw_sha': (r[11] or '')[:16],
-                'runtime_s': r[4],
+                'runtime_s': r[4], 'slug': r[12],
             })
     finally:
         c.close()
     return posts
+
+
+def _md_html(md):
+    import re as _re
+    import html as _h
+
+    def inline(t):
+        t = _h.escape(t)
+        t = _re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', t)
+        t = _re.sub(r'\*([^*]+)\*', r'<i>\1</i>', t)
+        return t
+    out, inlist = [], False
+    for ln in (md or '').split('\n'):
+        s = ln.rstrip()
+        if s.startswith('###'):
+            if inlist: out.append('</ul>'); inlist = False
+            out.append('<h3>' + inline(s.lstrip('#').strip()) + '</h3>')
+        elif s.startswith('##') or s.startswith('# '):
+            if inlist: out.append('</ul>'); inlist = False
+            out.append('<h2>' + inline(s.lstrip('#').strip()) + '</h2>')
+        elif s.startswith('- ') or s.startswith('* '):
+            if not inlist: out.append('<ul>'); inlist = True
+            out.append('<li>' + inline(s[2:]) + '</li>')
+        elif not s.strip():
+            if inlist: out.append('</ul>'); inlist = False
+        else:
+            if inlist: out.append('</ul>'); inlist = False
+            out.append('<p>' + inline(s) + '</p>')
+    if inlist: out.append('</ul>')
+    return '\n'.join(out)
+
+
+def article_list(limit=60):
+    try:
+        c = _conn()
+    except Exception:
+        return []
+    out = []
+    try:
+        try:
+            rows = c.execute('SELECT a.result_id,a.slug,a.title,a.meta,a.created_at,r.verdict '
+                             'FROM articles a JOIN results r ON a.result_id=r.id '
+                             'ORDER BY a.result_id DESC LIMIT ?', (limit,)).fetchall()
+        except Exception:
+            rows = []
+        for r in rows:
+            out.append({'id': r[0], 'slug': r[1], 'title': r[2], 'meta': r[3],
+                        'at_ar': _ar(r[4]), 'verdict': r[5], 'verdict_plain': _plain_verdict(r[5])})
+    finally:
+        c.close()
+    return out
+
+
+def article_by_slug(slug):
+    try:
+        c = _conn()
+    except Exception:
+        return None
+    r = None
+    try:
+        r = c.execute('SELECT a.result_id,a.slug,a.title,a.meta,a.body_md,a.keywords,a.created_at,r.verdict '
+                      'FROM articles a JOIN results r ON a.result_id=r.id WHERE a.slug=?', (slug,)).fetchone()
+    except Exception:
+        r = None
+    finally:
+        c.close()
+    if not r:
+        return None
+    return {'id': r[0], 'slug': r[1], 'title': r[2], 'meta': r[3], 'body_md': r[4],
+            'keywords': r[5], 'at_ar': _ar(r[6]), 'verdict': r[7]}
+
+
+def article_page(a):
+    import html as _h
+    url = 'https://vuppia.com/blog/' + a['slug']
+    title = _h.escape(a['title']); meta = _h.escape(a['meta'] or '')
+    kw = _h.escape(a.get('keywords') or '')
+    ld = json.dumps({'@context': 'https://schema.org', '@type': 'Article', 'headline': a['title'],
+                     'description': a['meta'], 'keywords': a.get('keywords') or '',
+                     'author': {'@type': 'Organization', 'name': 'VUPPIA SOFÍA'},
+                     'publisher': {'@type': 'Organization', 'name': 'VUPPIA SOFÍA',
+                                   'url': 'https://vuppia.com'},
+                     'mainEntityOfPage': url}, ensure_ascii=False)
+    body = _md_html(a['body_md'])
+    css = ('body{background:#070b12;color:#e7edf7;font:17px/1.75 -apple-system,BlinkMacSystemFont,'
+           '"Segoe UI",Roboto,Inter,sans-serif;margin:0}.wrap{max-width:720px;margin:0 auto;padding:0 20px 60px}'
+           'a{color:#5ac8fa;text-decoration:none}nav{padding:20px 0;font-size:14px;color:#5b6f90}'
+           'h1{font-size:clamp(26px,5vw,38px);line-height:1.2;margin:18px 0 6px}'
+           'h2{font-size:21px;margin:30px 0 8px;color:#a78bfa}h3{font-size:17px;margin:22px 0 6px}'
+           '.meta{color:#5b6f90;font-size:13.5px;margin-bottom:8px}'
+           '.vb{display:inline-block;font-size:11px;font-weight:700;padding:3px 9px;border-radius:7px;'
+           'text-transform:uppercase;margin-bottom:18px}.supported{background:#0f2417;color:#30d158}'
+           '.refuted{background:#2a1416;color:#ff6b6b}.inconclusive{background:#2a2410;color:#ffcc54}'
+           '.trivial,.invalid{background:#1a2030;color:#8ba0c0}'
+           'p{color:#c7d3e6}li{color:#c7d3e6;margin:6px 0}ul{padding-left:20px}'
+           '.note{background:#0c1322;border-left:3px solid #a78bfa;border-radius:10px;padding:14px 16px;'
+           'color:#8ba0c0;font-size:14px;margin:30px 0}footer{border-top:1px solid #121a2b;padding:26px 0;'
+           'color:#3a496a;font-size:13px}')
+    v = (a.get('verdict') or '').lower()
+    return ('<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{title} · VUPPIA SOFÍA</title><meta name="description" content="{meta}">'
+            f'<meta name="keywords" content="{kw}"><link rel="canonical" href="{url}">'
+            '<meta property="og:type" content="article">'
+            f'<meta property="og:title" content="{title}"><meta property="og:description" content="{meta}">'
+            f'<meta property="og:url" content="{url}"><meta property="og:site_name" content="VUPPIA SOFÍA">'
+            '<link rel="icon" href="/favicon.svg">'
+            f'<script type="application/ld+json">{ld}</script><style>{css}</style></head><body><div class="wrap">'
+            '<nav><a href="/">← Observatorio</a> · <a href="/blog">Blog</a></nav>'
+            f'<span class="vb {v}">{_h.escape(a.get("verdict") or "")}</span>'
+            f'<h1>{title}</h1><div class="meta">Experimento #{a["id"]} · {_h.escape(a.get("at_ar") or "")} · '
+            'VUPPIA SOFÍA</div>'
+            f'{body}'
+            '<div class="note">Esto mide una capacidad <b>funcional</b> en redes de prueba, con hipótesis '
+            'pre-registrada y control A/A. No es evidencia de conciencia ni experiencia subjetiva — VUPPIA '
+            'investiga esa pregunta, no la declara resuelta.</div>'
+            '<footer>VUPPIA SOFÍA · investigación autónoma en vivo · <a href="/blog">más artículos</a> · '
+            '<a href="/rss.xml">RSS</a></footer></div></body></html>')
 
 
 FAVICON = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
@@ -205,11 +331,17 @@ FAVICON = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
 
 ROBOTS = "User-agent: *\nAllow: /\nSitemap: https://vuppia.com/sitemap.xml\n"
 
-SITEMAP = ('<?xml version="1.0" encoding="UTF-8"?>'
-           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-           '<url><loc>https://vuppia.com/</loc><changefreq>hourly</changefreq></url>'
-           '<url><loc>https://vuppia.com/blog</loc><changefreq>hourly</changefreq></url>'
-           '</urlset>')
+def sitemap_xml():
+    urls = ['<url><loc>https://vuppia.com/</loc><changefreq>hourly</changefreq><priority>1.0</priority></url>',
+            '<url><loc>https://vuppia.com/blog</loc><changefreq>hourly</changefreq><priority>0.8</priority></url>']
+    try:
+        for a in article_list(500):
+            urls.append('<url><loc>https://vuppia.com/blog/' + _xesc(a['slug']) +
+                        '</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>')
+    except Exception:
+        pass
+    return ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(urls) + '</urlset>')
 
 
 def _xesc(s):
@@ -222,8 +354,9 @@ def rss_xml():
     for p in blog_posts(30):
         title = (p.get('title') or 'Experimento de VUPPIA')[:140]
         desc = f"Veredicto: {p.get('verdict')}. {p.get('verdict_plain', '')}"
+        link = ('https://vuppia.com/blog/' + _xesc(p['slug'])) if p.get('slug') else 'https://vuppia.com/blog'
         items.append('<item><title>' + _xesc(title) + '</title>'
-                     '<link>https://vuppia.com/blog</link>'
+                     '<link>' + link + '</link>'
                      '<guid isPermaLink="false">vuppia-exp-' + str(p['id']) + '</guid>'
                      '<description>' + _xesc(desc) + '</description></item>')
     return ('<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
@@ -693,12 +826,15 @@ async function load(){
   if(p.p_value!=null)stats.push('p = <b>'+fmt(p.p_value,4)+'</b>');
   if(p.effect_dz!=null)stats.push('tamaño de efecto d<sub>z</sub> = <b>'+fmt(p.effect_dz,3)+'</b>');
   if(p.control_mean!=null&&p.test_mean!=null)stats.push('medias: '+fmt(p.test_mean,3)+' (test) vs '+fmt(p.control_mean,3)+' (control)');
+  var head=p.slug?('<a href="/blog/'+p.slug+'" style="color:inherit;text-decoration:none">'+(p.title||'Experimento')+'</a>'):(p.title||'Experimento');
+  var more=p.slug?('<p><a href="/blog/'+p.slug+'" style="color:#5ac8fa;font-weight:600">Leer el artículo completo →</a></p>'):'';
   return '<article><div class="date">'+(p.date||'')+' · experimento #'+p.id+'</div>'+
-   '<h2>'+(p.title||'Experimento')+'</h2>'+
+   '<h2>'+head+'</h2>'+
    '<span class="vd '+p.verdict+'">'+p.verdict+'</span>'+
    '<p>'+intro+'</p>'+
    '<p class="mut">'+method+'</p>'+
    '<div class="box"><b>Resultado:</b> '+p.verdict_plain+(stats.length?('<br>'+stats.join(' · ')):'')+'</div>'+
+   more+
    '<p class="mut">Qué significa: aunque el resultado sea claro, mide capacidad funcional de un sistema chico, no estados mentales. Un veredicto negativo ("refuted") es información valiosa: descarta una hipótesis y orienta la próxima.</p>'+
    '<div class="prov">evidencia: sha '+p.raw_sha+' · origen: '+p.origin+'</div>'+
    '</article>';
@@ -768,6 +904,18 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps(blog_posts()).encode(), 'application/json; charset=utf-8')
         elif self.path == '/blog' or self.path.startswith('/blog?'):
             self._send(200, BLOG_PAGE.encode(), 'text/html; charset=utf-8')
+        elif self.path.startswith('/blog/'):
+            slug = self.path[len('/blog/'):].split('?')[0].strip('/')
+            art = article_by_slug(slug) if slug else None
+            if art:
+                self._send(200, article_page(art).encode(), 'text/html; charset=utf-8')
+            else:
+                self._send(404, ('<!DOCTYPE html><meta charset="utf-8"><title>No encontrado</title>'
+                                 '<body style="background:#070b12;color:#e7edf7;font-family:sans-serif;'
+                                 'text-align:center;padding:80px 20px"><h1>404</h1>'
+                                 '<p>Ese artículo no existe (todavía).</p>'
+                                 '<a style="color:#5ac8fa" href="/blog">← Volver al blog</a></body>').encode(),
+                           'text/html; charset=utf-8')
         elif self.path == '/rss.xml':
             self._send(200, rss_xml().encode(), 'application/rss+xml; charset=utf-8')
         elif self.path == '/favicon.svg':
@@ -775,7 +923,7 @@ class H(BaseHTTPRequestHandler):
         elif self.path == '/robots.txt':
             self._send(200, ROBOTS.encode(), 'text/plain; charset=utf-8')
         elif self.path == '/sitemap.xml':
-            self._send(200, SITEMAP.encode(), 'application/xml; charset=utf-8')
+            self._send(200, sitemap_xml().encode(), 'application/xml; charset=utf-8')
         elif self.path == '/' or self.path.startswith('/?'):
             self._send(200, PAGE.encode(), 'text/html; charset=utf-8')
         elif self.path == '/healthz':
