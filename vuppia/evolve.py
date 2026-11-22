@@ -16,6 +16,7 @@ La promoción al canal 'lab' es automática si gana; 'production' nunca lo es.
 from __future__ import annotations
 
 import ast
+import os
 import secrets
 from pathlib import Path
 
@@ -390,13 +391,17 @@ def generate_candidate(store: Store, skill: str, proposer) -> str:
     user = ('Módulo actual:\n' + inc_source + hint + '\n\nProponé una versión mejor. Fijate si el módulo '
             'actual IGNORA señales disponibles (en item) que deberían importar: usalas. Solo el código.')
     # Generar código es ocasional pero la calidad importa mucho: usamos el modelo FUERTE
-    # (coder/chat = 120b) si está configurado; si no, el proposer del motor.
-    coder = proposer
+    # (120b) para proponer, no el 20b del motor. El worker tiene GROQ_API_KEY, así que lo
+    # construimos directo si no hay un coder configurado por env.
+    coder = None
     try:
-        from .providers import from_env
-        coder = from_env(store, 'coder') or from_env(store, 'chat') or proposer
+        from .providers import from_env, Groq
+        coder = from_env(store, 'coder') or from_env(store, 'chat')
+        if coder is None and os.getenv('GROQ_API_KEY'):
+            coder = Groq(store, 'openai/gpt-oss-120b')
     except Exception:                                   # noqa: BLE001
-        coder = proposer
+        coder = None
+    coder = coder or proposer
     raw = coder.complete(system, user, purpose='evolve_generate', max_tokens=4000, temperature=0.6)
     src = raw.strip()
     if src.startswith('```'):
