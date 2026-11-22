@@ -982,7 +982,8 @@ var SAMPLE={experiments:[
 function esc(s){var d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML;}
 function render(st){
  var v=st.verdicts||{};
- document.getElementById('s-exp').textContent=(st.experiments||[]).length||Object.values(v).reduce(function(a,b){return a+b;},0)||'—';
+ var _exptot=(st.counts&&st.counts.experiments!=null)?st.counts.experiments:((st.experiments||[]).length||Object.values(v).reduce(function(a,b){return a+b;},0));
+ document.getElementById('s-exp').textContent=(_exptot!=null?_exptot:'—');
  document.getElementById('s-sup').textContent=v.supported||0;
  document.getElementById('s-ref').textContent=v.refuted||0;
  document.getElementById('s-cost').textContent='$'+((st.cost_usd||0).toFixed? (st.cost_usd).toFixed(2):st.cost_usd||0);
