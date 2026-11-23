@@ -37,8 +37,9 @@ def snapshot(store: Store) -> dict:
     hipotesis = q("SELECT id,statement,status FROM hypotheses WHERE status IN "
                   "('proposed','preregistered','running') ORDER BY id DESC LIMIT 8")
     research = q('SELECT id,question,status FROM research_runs ORDER BY id DESC LIMIT 5')
-    evol = q("SELECT skill,candidate_sha,decision,at FROM skill_evals WHERE decision='improved' "
-             'ORDER BY id DESC LIMIT 5')
+    evol = q("SELECT skill,new_sha,decided_by,at FROM skill_releases WHERE channel='production' "
+             "AND kind='promotion' ORDER BY id DESC LIMIT 5") \
+        if store.one("SELECT 1 FROM sqlite_master WHERE name='skill_releases'") else []
     prod = q("SELECT skill,sha FROM skill_pointers WHERE channel='production'")
     cost = store.one("SELECT COALESCE(SUM(cost_usd),0) FROM llm_calls WHERE day=date('now')")[0]
     hb = store.one("SELECT v FROM kv WHERE k='autonomous_heartbeat'") if \
@@ -57,48 +58,120 @@ def snapshot(store: Store) -> dict:
     }
 
 
-# --- clasificación de intención (robusta, sin LLM) ---
+# --- clasificación de intención (sin LLM) ---
+# Se decide por PALABRAS COMPLETAS (regex con límites de palabra), no por subcadenas: antes
+# "investiga" matcheaba dentro de "investigación" y cualquier pregunta que nombrara esa palabra
+# —incluida "¿cuál es tu propósito y tus misiones de investigación?"— salía a buscar papers.
+# Cuatro familias: (1) preguntas sobre ella misma (identidad, misión, estado) -> configuración y
+# memoria propias, nunca internet; (2) pedidos explícitos de investigación científica;
+# (3) órdenes de ejecución sobre la agenda; (4) conversación y preguntas generales.
+def _rx(p):
+    return re.compile(p, re.I | re.U)
+
+_SELF_REF = _rx(r'\b(tu|tus|vos|te|ti|sos|eres|ten[eé]s|tienes|est[aá]s|vuppia|sof[ií]a)\b')
+_IDENTITY = _rx(r'\b(prop[oó]sitos?|misi[oó]n|misiones|objetivos?|metas?|principios|identidad|'
+                r'carta fundacional|raz[oó]n de ser)\b|\b(qui[eé]n|qu[eé]) (sos|eres)\b|'
+                r'\bpara qu[eé] (exist[ií]s|existes|serv[ií]s|sirves|fuiste (creada|hecha)|te (crearon|hicieron))\b|'
+                r'\bqu[eé] es (vuppia|sof[ií]a)\b|\bc[oó]mo te llam[aá]s\b|\bqu[eé] busc[aá]s (lograr|conseguir)\b')
+_CMD_AGENDA = _rx(r'\b(suspend[eé]|suspender|paus[aá]|pausar|fren[aá]|frenar|prioriz[aá]|priorizar|'
+                  r'desprioriz[aá]|despriorizar)\b')
+_CMD_ADD = _rx(r'\b(agreg[aá]|agregar|sum[aá]|sumar|anot[aá]|anotar)\b.{0,60}\b(agenda|investigaci[oó]n|tema)\b|'
+               r'\bnueva investigaci[oó]n\b|\bpropon[eé] una investigaci[oó]n\b')
+_CMD_CONSULT = _rx(r'\b(consult[aá] (a )?otra|contrast[aá]|contrastar|otras? ia|segunda opini[oó]n)\b')
+# Pedido de investigación: verbo en imperativo/infinitivo como palabra completa. "investigación",
+# "investigaste", "buscador" NO cuentan.
+_RESEARCH_VERB = _rx(r'\b(busc[aá]|buscar|buscame|busques|averigu[aá]|averiguar|averig[uü]es|'
+                     r'investig[aá]|investigar|investigame|investigues|rastre[aá]|rastrear)\b')
+_NET = _rx(r'\b(en|por) (internet|la web|google|la red)\b|\bpapers?\b.{0,20}\b(sobre|de|acerca)\b')
+_STATUS_Q = _rx(r'\b(qu[eé]|c[oó]mo|cu[aá]l(es)?|cu[aá]nto|en qu[eé]|por qu[eé])\b.{0,25}\b(investig|est[aá]s|and[aá]s|'
+                r'ven[ií]s|hiciste|hac[eé]s|descubriste|avanzaste)')
+_CONSCIOUS_SELF = _rx(r'\b(sos|eres|est[aá]s|te consider[aá]s|te sent[ií]s|ten[eé]s|tienes|sent[ií]s|sientes|'
+                      r'experiment[aá]s)\b.{0,40}\b(conscien\w*|conciencia|sentimientos|emociones|experiencia subjetiva)\b|'
+                      r'\b(conscien\w*|conciencia)\b.{0,15}\b(ten[eé]s|tienes|sos|eres)\b')
+_SMALLTALK = _rx(r'^[\s¿¡]*(hola|buenas|buen d[ií]a|buenos d[ií]as|buenas (tardes|noches)|gracias|muchas gracias|'
+                 r'chau|adi[oó]s|hey|qu[eé] tal|c[oó]mo (est[aá]s|and[aá]s|va|ven[ií]s))\b[\s!.?¿¡,]*'
+                 r'(sof[ií]a|vuppia)?[\s!.?¿¡,]*$')
+
+
 def classify(text: str) -> str:
-    t = text.lower()
+    t = (text or '').lower()
     def has(*ws): return any(w in t for w in ws)
-    if has('suspend', 'pausá', 'pausa ', 'frená', 'frena ', 'priorizá', 'prioriza', 'despriorizá'):
+    if _SMALLTALK.search(t):
+        return 'smalltalk'
+    # (3) órdenes de ejecución
+    if _CMD_AGENDA.search(t):
         return 'cmd_agenda'
-    if has('agregá', 'agrega ', 'sumá', 'suma ', 'nueva investigación', 'nueva investigacion', 'proponé una'):
+    if _CMD_ADD.search(t):
         return 'cmd_add'
-    if has('consultá otra', 'consulta otra', 'contrastá', 'contrasta', 'otra ia', 'otras ia', 'segunda opinión'):
+    if _CMD_CONSULT.search(t):
         return 'cmd_consult_ai'
-    # Preguntas meta de auto-mejora: "¿qué aprendiste para mejorarte?", "modificá tu código y
-    # automejorate". NO se mandan a sintetizar (el modelo las rechaza): se responden desde el
-    # estado real del motor (hipótesis que se formuló, experimentos, evolución de código).
     if has('modificá tu código', 'modifica tu codigo', 'modificar tu código', 'modificar tu codigo',
            'automejor', 'auto-mejor', 'mejorá tu intelig', 'mejora tu intelig', 'mejorar tu intelig',
            'mejorar tu propia intelig', 'mejorá tu propia', 'mejorar tus capacidades', 'mejorá tus capacidades',
            'qué aprendiste', 'que aprendiste', 'para mejorarte', 'mejorar tu programación',
            'mejorar tu programacion', 'mejorá tu código', 'reescribí tu código', 'reescribir tu código'):
         return 'self_improve'
-    _search_verb = has('buscá', 'busca ', 'buscar', 'buscás', 'busques', 'averiguá', 'averiguar',
-                       'conseguí información', 'conseguir información', 'sacá tus conclusiones', 'sacá conclusiones')
-    _net = has('en internet', 'en la web', 'en google', 'en la red')
-    _investig = has('investigá', 'investiga', 'investigar', 'investigues')
-    _status_q = has('qué investig', 'que investig', 'qué estás', 'que estas', 'en qué andás', 'en que andas')
-    if _search_verb or _net or (_investig and not _status_q):
+    # (2) pedido explícito de investigación científica. No aplica si en realidad preguntan por
+    # su estado ("¿qué estás investigando?") ni si la pregunta es sobre ella misma.
+    asks_research = bool(_RESEARCH_VERB.search(t)) or (bool(_NET.search(t)) and not _IDENTITY.search(t))
+    if asks_research and not _STATUS_Q.search(t):
         return 'cmd_research'
-    if has('consciente', 'conciencia', 'sentís', 'sentis', 'experiencia subjetiva', 'tenés sentimientos'):
+    # (1) preguntas sobre sí misma
+    if _CONSCIOUS_SELF.search(t):
         return 'consciousness'
+    if _IDENTITY.search(t) and (_SELF_REF.search(t) or len(t) < 60):
+        return 'identity'
     if has('te falta', 'necesitás', 'necesitas', 'qué te falta', 'para avanzar', 'permisos', 'recursos', 'presupuesto'):
         return 'gaps'
-    if has('código', 'codigo', 'mejoras hiciste', 'autoprogram', 'evolucion', 'tu propio código'):
+    if has('tu código', 'tu codigo', 'mejoras hiciste', 'mejoras de código', 'mejoras de codigo',
+           'código hiciste', 'codigo hiciste', 'autoprogram', 'tu propio código'):
         return 'code'
-    if has('prueba', 'evidencia', 'respald', 'mostrame las'):
+    if has('qué evidencia', 'que evidencia', 'qué pruebas', 'que pruebas', 'respald', 'mostrame las'):
         return 'evidence'
-    if has('gast', 'costo', 'cuánto', 'cuanto sale'):
+    if has('cuánto gast', 'cuanto gast', 'cuánto cost', 'cuanto cost', 'cuánto sale', 'cuanto sale', 'tu costo', 'tus costos'):
         return 'cost'
     if has('mientras no estaba', 'investigaste', 'descubriste', 'estás intentando', 'estas intentando',
-           'por qué elegiste', 'por que elegiste', 'en qué andás', 'qué estás haciendo', 'qué hiciste hoy'):
+           'por qué elegiste', 'por que elegiste', 'en qué andás', 'qué estás haciendo', 'qué hiciste hoy',
+           'qué estás investigando', 'que estas investigando', 'tu agenda', 'tus tareas', 'tu estado'):
         return 'status'
-    if has('agenda', 'tareas', 'pendiente', 'trabajando'):
-        return 'status'
-    return 'status'
+    # (4) conversación y preguntas generales: las responde el modelo con su estado como contexto,
+    # sin salir a internet y sin tocar la agenda.
+    return 'general'
+
+
+def _identity_answer(store: Store, state: dict) -> str:
+    """Quién es y para qué existe, leído de su configuración PERSISTENTE (carta en kv) y de su
+    estado real. No usa internet ni el modelo: no puede inventar una misión."""
+    from . import charter as _ch
+    c = None
+    try:
+        row = store.one("SELECT v FROM kv WHERE k='mission_charter'")
+        c = json.loads(row[0]) if row and row[0] else None
+    except Exception:                                   # noqa: BLE001
+        c = None
+    origen = 'mi carta fundacional guardada (versión %s)'
+    if not c:
+        c = _ch.charter(); origen = 'mi carta fundacional en código (versión %s; todavía no quedó grabada en mi base)'
+    parts = ['Soy VUPPIA SOFÍA, un sistema de investigación autónomo. Esto sale de ' + origen % c.get('version') + ':',
+             '**Misión central:** ' + c.get('mission', '')]
+    if c.get('objective'):
+        parts.append('**Cómo la persigo:** ' + c['objective'])
+    lines = c.get('research_lines') or []
+    if lines:
+        parts.append('**Líneas de investigación permanentes:** ' + '; '.join(lines) + '.')
+    inds = c.get('indicators') or []
+    if inds:
+        n_eval = sum(1 for i in inds if i.get('status') != 'sin evaluar')
+        parts.append(f'**Contra qué me mido:** {len(inds)} indicadores de conciencia de las teorías científicas '
+                     f'({n_eval} evaluados con experimento, {len(inds) - n_eval} sin evaluar).')
+    act = state.get('agenda_activa') or []
+    if act:
+        parts.append('**Qué estoy investigando ahora:** ' + '; '.join((a.get('topic') or '')[:70] for a in act[:3]) + '.')
+    if c.get('safety'):
+        parts.append('**Límites:** ' + c['safety'])
+    parts.append('No afirmo ser consciente: no tengo evidencia de eso y hoy no existe una prueba aceptada. '
+                 + (c.get('caveat') or ''))
+    return '\n\n'.join(p for p in parts if p)
 
 
 def _topic_from(text: str) -> str:
@@ -140,6 +213,8 @@ def ask(store: Store, question: str, *, provider=None, verifier=None, online=Fal
         answer = _cmd_research(store, question, intent, provider, verifier, online, done, proposed, needs)
     elif intent == 'self_improve':
         answer = _self_improve_report(store)
+    elif intent == 'identity':
+        answer = _identity_answer(store, state)
     elif intent == 'cmd_research':
         # El chat sale EN VIVO a internet (fuentes científicas, solo lectura) y responde con
         # fuentes; si la búsqueda en vivo falla, encola el tema para el motor autónomo.
@@ -207,10 +282,15 @@ def _self_improve_report(store) -> str:
         pass
     # 3) Evolución real de código (candidatos que mejoraron al incumbente).
     try:
-        imp = store.q("SELECT skill, COUNT(*) FROM skill_evals WHERE decision='improved' GROUP BY skill")
+        imp = store.q("SELECT skill, new_sha, decided_by, generator FROM skill_releases WHERE "
+                      "channel='production' AND kind='promotion' ORDER BY id")
         if imp:
-            parts.append('Código propio que reescribí y mejoró en el laboratorio: '
-                         + ', '.join(f'{s} ({c})' for s, c in imp) + '.')
+            parts.append('Versiones de código incorporadas (según mi registro de versiones): '
+                         + '; '.join(f'{s} {sha[:8]} (decidió: {d}; código: {g or "sin dato"})'
+                                     for s, sha, d, g in imp) + '.')
+        from . import evolve as _ev
+        parts.append(f'Mejoras incorporadas con evaluación independiente: {_ev.verified_improvements(store)}. '
+                     'Las importadas o reconstruidas no cuentan como automejora mía.')
     except Exception:                                   # noqa: BLE001
         pass
     # 4) Mecanismos de ARQUITECTURA nuevos (no solo scoring): cabeza metacognitiva.
@@ -279,17 +359,17 @@ def _live_research(store, question, provider, fallback, done) -> str:
     # auto-mejora de mi arquitectura, como experimento. No queda en una respuesta suelta.
     fed = False
     try:
-        row = store.one("SELECT COUNT(*) FROM agenda WHERE status='active'")
-        n_active = row[0] if row else 0
-        status = 'active' if n_active < 12 else 'proposed'
-        agenda.add(store, topic[:80], 'Profundizar (de una charla) para auto-mejora: ' + topic,
-                   status=status, origin='user', priority=2.5)
-        fed = True
+        # Solo llega acá un pedido EXPLÍCITO de investigación. Entra como PROPUESTA (la activa el
+        # operador), una sola vez por tema: una pregunta suelta nunca modifica la agenda activa.
+        if not store.one('SELECT 1 FROM agenda WHERE lower(topic)=lower(?)', (topic[:80],)):
+            fed_id = agenda.add(store, topic[:80], 'Pedido de investigación desde el chat: ' + topic,
+                                status='proposed', origin='user', priority=2.0)
+            fed = True
     except Exception:                                   # noqa: BLE001
         fed = False
     if fed:
-        parts.append('Además lo enganché con mi motor: lo sumé a mi agenda para investigarlo a fondo '
-                     'y sacar de ahí una mejora concreta de mi arquitectura. Lo vas a ver en mis experimentos.')
+        parts.append(f'Lo dejé como PROPUESTA en mi agenda (id {fed_id}) por si querés que lo investigue a fondo: '
+                     'no lo activé; se aprueba desde el panel.')
     parts.append('(Lo busqué en vivo en fuentes científicas y lo guardé en mi memoria con las fuentes. '
                  'Son resultados de búsqueda, no una verificación independiente ni lectura completa de los papers.)')
     return '\n\n'.join(parts)
@@ -302,10 +382,11 @@ def _queue_research(store, question, done) -> str:
     if not topic or len(topic) < 3:
         topic = question.strip()[:200]
     try:
-        row = store.one("SELECT COUNT(*) FROM agenda WHERE status='active' AND origin='user'")
-        n_active = row[0] if row else 0
-        status = 'active' if n_active < 8 else 'proposed'
+        status = 'proposed'       # nunca se activa sola: la aprueba el operador
         short = topic if len(topic) <= 80 else topic[:77] + '...'
+        dup = store.one('SELECT id FROM agenda WHERE lower(topic)=lower(?)', (short,))
+        if dup:
+            return f'Ese tema ya está en mi agenda (id {dup[0]}); no lo dupliqué.'
         aid = agenda.add(store, short, 'Investigar en internet: ' + topic,
                          status=status, priority=2.5, origin='user')
         done.append(f'Sumé a mi agenda (id {aid}) investigar en internet: "{short}".')

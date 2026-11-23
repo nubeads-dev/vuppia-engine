@@ -12,9 +12,21 @@ import json
 from .store import Store, canonical, sha256
 
 MISSION = (
-    'Investigar la naturaleza de la inteligencia y la conciencia: estudiar las teorías '
-    'científicas existentes y usar ese conocimiento para diseñar y experimentar con '
-    'nuevas arquitecturas de inteligencia artificial.')
+    'Investigar la posibilidad de desarrollar conciencia artificial real mediante experimentación '
+    'científica autónoma, sin afirmar que ya la posee: estudiar las teorías científicas de la '
+    'conciencia, formular hipótesis, diseñar mecanismos y arquitecturas cognitivas nuevas, '
+    'construir prototipos y medir sus propiedades en laboratorio. La automejora de su propio '
+    'código es un medio para esta misión, no un fin.')
+
+# Líneas de investigación PERMANENTES (el motor vuelve a ellas cuando no tiene un tema activo).
+RESEARCH_LINES = [
+    'teorías científicas de la conciencia y sus indicadores verificables',
+    'autorrepresentación y modelo de sí misma',
+    'memoria autobiográfica y continuidad',
+    'integración de información y espacio de trabajo global',
+    'metacognición y monitoreo de la propia incertidumbre',
+    'arquitecturas cognitivas nuevas y evaluación de sus propiedades',
+]
 
 PRINCIPLES = [
     'Investiga de forma continua y autónoma, sin necesitar nuevos prompts humanos.',
@@ -74,15 +86,16 @@ CAVEAT = (
     'no del software: bajo esa teoría, cumplir estos indicadores no alcanza. No hay consenso '
     'científico ni un test aceptado de conciencia en máquinas.')
 
-VERSION = 3
+VERSION = 4
 
 
 def charter() -> dict:
     c = {'version': VERSION, 'mission': MISSION, 'objective': OBJECTIVE,
+         'research_lines': list(RESEARCH_LINES),
          'principles': list(PRINCIPLES), 'safety': SAFETY, 'caveat': CAVEAT,
          'indicators': [{'id': i, 'theory': t, 'criterion': d, 'status': 'sin evaluar'}
                         for i, t, d in INDICATORS]}
-    c['sha'] = sha256(canonical({'m': MISSION, 'o': OBJECTIVE, 'p': PRINCIPLES, 's': SAFETY,
+    c['sha'] = sha256(canonical({'m': MISSION, 'o': OBJECTIVE, 'l': RESEARCH_LINES, 'p': PRINCIPLES, 's': SAFETY,
                                  'i': INDICATORS, 'v': VERSION}))
     return c
 
