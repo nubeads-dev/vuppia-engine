@@ -48,10 +48,10 @@ _SECRET_NAMES = ('GROQ_API_KEY', 'GEMINI_API_KEY', 'CEREBRAS_API_KEY', 'OPENROUT
                  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY')
 _CONFIG_NAMES = ('VUPPIA_CHAT', 'VUPPIA_PROPOSER', 'VUPPIA_POOL', 'VUPPIA_POOL_CHAT',
                  'VUPPIA_POOL_PROPOSER', 'VUPPIA_FRONTIER', 'VUPPIA_DAILY_BUDGET_USD',
-                 'VUPPIA_MONTHLY_BUDGET_USD', 'VUPPIA_PER_CALL_CAP_USD')
+                 'VUPPIA_MONTHLY_BUDGET_USD', 'VUPPIA_PER_CALL_CAP_USD', 'VUPPIA_ENGINE_PAID_DAILY_USD')
 # Techos duros de presupuesto cuando viene del panel (no se pueden subir desde ahi).
 _BUDGET_CEIL = {'VUPPIA_DAILY_BUDGET_USD': 2.0, 'VUPPIA_MONTHLY_BUDGET_USD': 30.0,
-                'VUPPIA_PER_CALL_CAP_USD': 0.5}
+                'VUPPIA_PER_CALL_CAP_USD': 0.5, 'VUPPIA_ENGINE_PAID_DAILY_USD': 0.5}
 _FILE_CACHE: dict = {}
 
 
@@ -143,6 +143,23 @@ def daily_budget() -> float:
 
 def monthly_budget() -> float:
     return float(cfg('VUPPIA_MONTHLY_BUDGET_USD') or '10.00')
+
+
+def engine_paid_cap() -> float:
+    """Tope diario PROPIO del motor autónomo en el carril pago (respaldo cuando los gratis
+    están sin cuota). 0 = el motor nunca usa el carril pago. Va ADEMÁS del tope diario general."""
+    try:
+        return max(0.0, float(cfg('VUPPIA_ENGINE_PAID_DAILY_USD') or '0'))
+    except ValueError:
+        return 0.0
+
+
+def engine_paid_spent(store, backstop) -> float:
+    """Gasto de HOY del motor en el carril pago: llamadas al modelo de respaldo que no son del chat."""
+    return float(store.one(
+        "SELECT COALESCE(SUM(COALESCE(cost_usd, reserved_usd)),0) FROM llm_calls "
+        "WHERE day=? AND provider=? AND model=? AND purpose<>'converse'",
+        (utc()[:10], backstop.name, backstop.model))[0] or 0.0)
 
 
 def per_call_cap() -> float:
@@ -425,18 +442,40 @@ class Pool(Provider):
         super().__init__(store, 'pool')
         self.members = members
         self.last_used = None
+        self.backstop = None            # carril pago de respaldo (solo rol proposer, con tope propio)
 
     def _ready(self):
         now = time.time()
         return [m for m in self.members if _COOL.get((m.name, m.model), 0) <= now]
 
+    def _backstop_ok(self) -> bool:
+        """El respaldo pago se habilita solo si queda tope propio del motor, y RACIONADO a lo
+        largo del día (tope × fracción del día transcurrida) para no quemarlo en la primera hora."""
+        if self.backstop is None:
+            return False
+        cap = engine_paid_cap()
+        if cap <= 0:
+            return False
+        hour = int(utc()[11:13])
+        allowed = cap * (hour + 1) / 24.0
+        return engine_paid_spent(self.store, self.backstop) + 0.01 <= allowed
+
+    def _via_backstop(self, system, user, purpose, max_tokens, temperature, hypothesis_id):
+        text = self.backstop.complete(system, user, purpose=purpose, max_tokens=min(max_tokens, 700),
+                                      temperature=temperature, hypothesis_id=hypothesis_id)
+        self.last_used = self.backstop
+        self.last_call_id = getattr(self.backstop, 'last_call_id', None)
+        return text
+
     def has_capacity(self) -> bool:
-        return bool(self._ready())
+        return bool(self._ready()) or self._backstop_ok()
 
     def complete(self, system: str, user: str, *, purpose: str, max_tokens: int = 800,
                  temperature: float | None = None, hypothesis_id: int | None = None) -> str:
         ready = self._ready()
         if not ready:
+            if self._backstop_ok():
+                return self._via_backstop(system, user, purpose, max_tokens, temperature, hypothesis_id)
             raise ProviderError('pool: todos los proveedores gratis estan en enfriamiento (HTTP 429)')
         last = None
         for m in ready:
@@ -464,6 +503,8 @@ class Pool(Provider):
                     _COOL[(m.name, m.model)] = time.time() + 30
             finally:
                 _FAST.on = False
+        if self._backstop_ok():
+            return self._via_backstop(system, user, purpose, max_tokens, temperature, hypothesis_id)
         raise ProviderError('pool: fallaron todos los proveedores; ultimo: ' + str(last)[:120])
 
 
@@ -489,7 +530,13 @@ def from_env(store: Store, role: str) -> Provider | None:
     if not spec:
         return None
     if spec.strip() == 'pool':
-        return _pool_from_env(store, role)
+        pool = _pool_from_env(store, role)
+        if pool is not None and role == 'proposer' and engine_paid_cap() > 0:
+            try:
+                pool.backstop = from_env(store, 'frontier')
+            except Exception:                           # noqa: BLE001
+                pool.backstop = None
+        return pool
     prov, _, model = spec.partition(':')
     cls = _CLASSES.get(prov)
     if not cls or not model:
