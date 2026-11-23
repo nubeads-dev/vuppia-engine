@@ -610,6 +610,21 @@ def admin_action(action, tok, args=None):
             except Exception:
                 pass
 
+    if action == 'last_tick':
+        st = None
+        try:
+            st, _ = _admin_store()
+            import json as _json
+            row = st.one("SELECT v FROM kv WHERE k='last_tick'")
+            return {'ok': True, 'last_tick': _json.loads(row[0]) if row and row[0] else None}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            try:
+                st.db.close()
+            except Exception:
+                pass
+
     # --- Agenda: leer y gobernar (prioridad / suspender / activar / aprobar) ---
     if action in ('agenda_list', 'agenda_priority', 'agenda_status'):
         st = None

@@ -200,6 +200,10 @@ def tick(store: Store, cfg: dict) -> dict:
     # o con un proveedor GRATUITO (costo real $0: no consume presupuesto, así que no se bloquea en 0).
     proposer = from_env(store, 'proposer')
     _free = bool(proposer) and getattr(proposer, 'name', '') in ('groq', 'openrouter', 'gemini')
+    # Conteo histórico de ticks (gatea los pasos periódicos). Se calcula SIEMPRE, afuera del
+    # freno por cuota, para que los pasos SIN LLM (auto-aplicación y monitoreo de producción,
+    # puro sandbox/CPU) no queden rehenes de la cuota del modelo.
+    _ntick = store.one("SELECT COUNT(*) FROM ledger WHERE kind='autonomous_tick'")[0]
     if proposer and _chat_active(store):
         # Alguien está chateando: le cedemos la cuota del modelo este tick (el experimento
         # por regla ya corrió arriba, así que el motor igual avanza sin tocar el LLM).
@@ -208,7 +212,6 @@ def tick(store: Store, cfg: dict) -> dict:
         # Queda poca cuota por minuto del proveedor: el motor sipea y deja aire para el chat.
         did['actions'].append({'quota_brake': 'poca cuota del modelo; salteo pasos de LLM este tick'})
     elif proposer and (_free or _budget_left(store) > 0.02):
-        _ntick = store.one("SELECT COUNT(*) FROM ledger WHERE kind='autonomous_tick'")[0]
         # 3a-bis) Investigación de un tema de la agenda: pesada (web + LLM), cada 3 ticks.
         top = agenda.top_active(store)
         if top and os.getenv('VUPPIA_AUTONOMOUS_ONLINE') == '1' and _ntick % 3 == 0 and (_free or _budget_left(store) > 0.05):
@@ -258,29 +261,8 @@ def tick(store: Store, cfg: dict) -> dict:
                             did['actions'].append({'evolve_reference': skill, 'promoted_to_lab': True})
                     except Exception as exc:           # noqa: BLE001
                         did['errors'].append(f'evolve_ref {skill}: ' + repr(exc)[:120])
-        # 3b-ter) Monitoreo de PRODUCCIÓN + rollback automático (apagado por defecto; se activa
-        # con VUPPIA_AUTO_ROLLBACK=1). Re-evalúa la versión en producción y, si regresó, vuelve
-        # sola a la versión anterior. Cada 8 ticks para no recargar.
-        if os.getenv('VUPPIA_AUTO_ROLLBACK') == '1' and _ntick % 8 == 0:
-            for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
-                try:
-                    mon = evolve.monitor_production(store, skill)
-                    if mon.get('regressed'):
-                        did['actions'].append({'auto_rollback': skill, 'to': mon.get('rolled_back_to')})
-                except Exception as exc:               # noqa: BLE001
-                    did['errors'].append(f'monitor {skill}: ' + repr(exc)[:120])
-        # 3b-quad) AUTO-APLICACIÓN de bajo riesgo (apagada por defecto; se activa con
-        # VUPPIA_AUTOAPPLY=1, autorización previa del operador). Si una mejora de scoring
-        # verificada está en lab por delante de producción, la aplica SOLA a producción.
-        # Lo crítico/arquitectura NUNCA pasa por acá: eso siempre exige firma.
-        if os.getenv('VUPPIA_AUTOAPPLY') == '1' and _ntick % 4 == 0:
-            for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
-                try:
-                    ap = evolve.auto_apply(store, skill)
-                    if ap.get('status') == 'aplicado':
-                        did['actions'].append({'auto_apply': skill, 'to': (ap.get('promoted_to_production') or '')[:12]})
-                except Exception as exc:               # noqa: BLE001
-                    did['errors'].append(f'autoapply {skill}: ' + repr(exc)[:120])
+        # (El monitoreo de producción y la auto-aplicación se movieron AFUERA del freno por
+        #  cuota, más abajo: no usan LLM y no deben depender de la cuota del modelo.)
         # 3b-bis) Estudio sobre el MODELO REAL (protocolos LLM): caro (muchas llamadas), así que
         # ocasional — 1 de cada 8 ticks. Así VUPPIA se estudia a sí misma sin trabar el motor.
         _subj = from_env(store, 'subject')
@@ -313,6 +295,30 @@ def tick(store: Store, cfg: dict) -> dict:
             except Exception as exc:                       # noqa: BLE001
                 did['errors'].append('blog: ' + repr(exc)[:120])
 
+    # 3f) Pasos SIN LLM (puro sandbox/CPU): corren SIEMPRE, afuera del freno por cuota del
+    # modelo, porque no consumen cuota de Groq. Así el loop de autoprogramación (evaluar una
+    # mejora ya existente en lab y aplicarla) no queda bloqueado cuando el proveedor está topado.
+    # Monitoreo de PRODUCCIÓN + rollback automático (VUPPIA_AUTO_ROLLBACK=1), cada 8 ticks.
+    if os.getenv('VUPPIA_AUTO_ROLLBACK') == '1' and _ntick % 8 == 0:
+        for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
+            try:
+                mon = evolve.monitor_production(store, skill)
+                if mon.get('regressed'):
+                    did['actions'].append({'auto_rollback': skill, 'to': mon.get('rolled_back_to')})
+            except Exception as exc:                       # noqa: BLE001
+                did['errors'].append(f'monitor {skill}: ' + repr(exc)[:120])
+    # AUTO-APLICACIÓN de bajo riesgo (VUPPIA_AUTOAPPLY=1, autorización previa del operador): si
+    # una mejora de scoring verificada está en lab por delante de producción, la aplica SOLA.
+    # Lo crítico/arquitectura NUNCA pasa por acá: eso siempre exige firma.
+    if os.getenv('VUPPIA_AUTOAPPLY') == '1' and _ntick % 4 == 0:
+        for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
+            try:
+                ap = evolve.auto_apply(store, skill)
+                if ap.get('status') == 'aplicado':
+                    did['actions'].append({'auto_apply': skill, 'to': (ap.get('promoted_to_production') or '')[:12]})
+            except Exception as exc:                       # noqa: BLE001
+                did['errors'].append(f'autoapply {skill}: ' + repr(exc)[:120])
+
     # 4) Aprender de los resultados para decidir qué sigue (no repetir eternamente).
     try:
         did['actions'].append({'learn': _learn(store)})
@@ -326,6 +332,17 @@ def tick(store: Store, cfg: dict) -> dict:
     store.append('autonomous_tick', {'actions': len(did['actions']), 'errors': len(did['errors']),
                                      'cost_delta': round(cost1 - cost0, 4),
                                      'progress': did['progress']})
+    # Observabilidad: guardar el DETALLE del último tick en kv (legible por admin), porque los
+    # prints del worker quedan en el buffer y no llegan a los logs. Así se ve qué hizo cada tick.
+    try:
+        import json as _json
+        with store.tx() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
+            db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('last_tick',?)",
+                       (_json.dumps({'at': did.get('at'), 'ntick': _ntick,
+                                     'actions': did['actions'][-14:], 'errors': did['errors'][-8:]})[:6000],))
+    except Exception:                                  # noqa: BLE001
+        pass
     try:
         heartbeat(store, {'at': did['at'], 'actions': len(did['actions']), 'errors': len(did['errors']),
                           'cost_today': did['cost_after'],
