@@ -322,7 +322,12 @@ def tick(store: Store, cfg: dict) -> dict:
     # AUTO-APLICACIÓN de bajo riesgo (VUPPIA_AUTOAPPLY=1, autorización previa del operador): si
     # una mejora de scoring verificada está en lab por delante de producción, la aplica SOLA.
     # Lo crítico/arquitectura NUNCA pasa por acá: eso siempre exige firma.
-    if os.getenv('VUPPIA_AUTOAPPLY') == '1' and _ntick % 4 == 0:
+    # CONGELADO (23/11): ninguna incorporación automática a producción hasta que existan las
+    # pruebas independientes y la autorización del operador. Se habilita creando el archivo
+    # AUTOAPPLY_OK en el volumen de datos; la variable de entorno sola ya no alcanza.
+    from . import providers as _pv
+    _autoapply_ok = os.path.exists(os.path.join(_pv.data_dir(), 'AUTOAPPLY_OK'))
+    if _autoapply_ok and os.getenv('VUPPIA_AUTOAPPLY') == '1' and _ntick % 4 == 0:
         for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
             try:
                 ap = evolve.auto_apply(store, skill)
