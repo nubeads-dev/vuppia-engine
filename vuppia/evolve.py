@@ -171,10 +171,26 @@ def _eval_on_regime(source: str, regime: str, seed: int, spec: dict) -> dict:
     return spec['grade'](scores, inst)
 
 
-def evaluate(store: Store, skill: str, candidate_source: str) -> dict:
+def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'lab') -> dict:
     spec = skill_spec(skill)
     candidate_check(candidate_source, spec['func'])
-    inc_sha, inc_source = current(store, skill)
+    # Incumbente a comparar. against='lab' (default): la versión en lab (para promoción a lab).
+    # against='production': lo que corre en producción; si producción está vacía, la SEMILLA
+    # (el piso real), nunca la propia versión de lab —comparar lab contra lab siempre empata.
+    if against == 'seed':
+        inc_source = seed_source(skill)                 # piso fijo (para monitoreo de regresión)
+        inc_sha = sha256(inc_source)
+    elif against == 'production':
+        prow = store.one('SELECT v.sha,v.source FROM skill_pointers p JOIN skill_versions v '
+                         "ON v.skill=p.skill AND v.sha=p.sha WHERE p.skill=? AND p.channel='production'",
+                         (skill,))
+        if prow:
+            inc_sha, inc_source = prow[0], prow[1]
+        else:
+            inc_source = seed_source(skill)
+            inc_sha = sha256(inc_source)
+    else:
+        inc_sha, inc_source = current(store, skill)
     cand_sha = sha256(candidate_source)
     # Comprometer las semillas (una por régimen) ANTES de evaluar.
     seeds = {r: secrets.randbelow(2**31) for r in spec['regimes']}
@@ -332,7 +348,7 @@ def auto_apply(store: Store, skill: str) -> dict:
     if not src:
         return {'skill': skill, 'status': 'fuente_no_encontrada'}
     try:
-        analysis = evaluate(store, skill, src[0])       # juez independiente: lab vs incumbente
+        analysis = evaluate(store, skill, src[0], against='production')  # juez: lab vs PRODUCCION (o semilla si vacia)
     except Exception as exc:                            # noqa: BLE001
         return {'skill': skill, 'status': 'eval_error', 'error': repr(exc)[:120]}
     if not analysis.get('improved'):
@@ -393,7 +409,7 @@ def monitor_production(store: Store, skill: str) -> dict:
     if not src_row:
         return {'skill': skill, 'status': 'fuente_no_encontrada'}
     try:
-        analysis = evaluate(store, skill, src_row[0])   # re-evalúa vs incumbente (semilla por defecto)
+        analysis = evaluate(store, skill, src_row[0], against='seed')  # produccion vs SEMILLA (piso)
     except Exception as exc:                             # noqa: BLE001
         return {'skill': skill, 'status': 'eval_error', 'error': repr(exc)[:120]}
     worst = analysis.get('worst_regime_delta')
