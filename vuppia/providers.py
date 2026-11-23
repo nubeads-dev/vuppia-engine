@@ -464,7 +464,7 @@ class Pool(Provider):
         # Sin 'temperature': el modelo de respaldo la rechaza (HTTP 400 visto en plan_ai el 23/11).
         # Si igual falla, se lo enfría 30 min para no repetir llamadas fallidas con reserva de costo.
         try:
-            text = self.backstop.complete(system, user, purpose=purpose, max_tokens=min(max_tokens, 900),
+            text = self.backstop.complete(system, user, purpose=purpose, max_tokens=max(max_tokens, 1600),   # más verboso: con 900 cortaba el JSON de plan_ai
                                           temperature=None, hypothesis_id=hypothesis_id)
         except BudgetExceeded:
             raise
