@@ -36,13 +36,76 @@ SAFETY = (
     'cambios en sus mecanismos de seguridad y los gastos no autorizados requieren '
     'aprobación humana con firma.')
 
-VERSION = 2
+# Meta operativa de la misión: los INDICADORES de conciencia de las teorías científicas vigentes.
+# No existen "leyes" de la conciencia ni un test aceptado; lo más cercano a un criterio
+# verificable es esta lista de propiedades funcionales derivadas de las teorías principales
+# (Butlin, Long y otros, "Consciousness in Artificial Intelligence: Insights from the Science
+# of Consciousness", 2023, arXiv:2308.08708). Cumplirlas NO demuestra experiencia subjetiva:
+# marca qué tan candidata es una arquitectura según cada teoría. El estado de cada indicador
+# solo cambia con un experimento registrado que lo respalde; nunca por declaración.
+OBJECTIVE = (
+    'Evaluarse contra los indicadores de conciencia de las teorías científicas vigentes, '
+    'identificar cuáles no cumple, y diseñar, construir y medir en laboratorio los mecanismos '
+    'que faltan, uno por uno, con experimentos registrados y líneas de base. Informar siempre '
+    'el estado real de cada indicador, sin declararse consciente.')
+
+INDICATORS = [
+    ('RPT-1', 'Procesamiento recurrente', 'Módulos de entrada con recurrencia algorítmica (la salida vuelve a entrar al mismo proceso).'),
+    ('RPT-2', 'Procesamiento recurrente', 'Representaciones perceptivas organizadas e integradas de la entrada.'),
+    ('GWT-1', 'Espacio de trabajo global', 'Varios sistemas especializados capaces de operar en paralelo.'),
+    ('GWT-2', 'Espacio de trabajo global', 'Un espacio de trabajo de capacidad limitada: cuello de botella con atención selectiva.'),
+    ('GWT-3', 'Espacio de trabajo global', 'Difusión global: lo que entra al espacio de trabajo queda disponible para todos los módulos.'),
+    ('GWT-4', 'Espacio de trabajo global', 'Atención dependiente del estado, para encadenar módulos en tareas complejas.'),
+    ('HOT-1', 'Teorías de orden superior', 'Módulos de percepción generativos, de arriba hacia abajo o con ruido.'),
+    ('HOT-2', 'Teorías de orden superior', 'Monitoreo metacognitivo que distingue representaciones confiables del ruido.'),
+    ('HOT-3', 'Teorías de orden superior', 'Agencia guiada por un sistema de creencias y selección de acciones, que actualiza creencias según su monitoreo metacognitivo.'),
+    ('HOT-4', 'Teorías de orden superior', 'Codificación dispersa y suave que genera un espacio de cualidades.'),
+    ('AST-1', 'Esquema de atención', 'Un modelo predictivo que representa y controla el estado actual de su propia atención.'),
+    ('PP-1', 'Procesamiento predictivo', 'Módulos de entrada con codificación predictiva (predicen su entrada y aprenden del error).'),
+    ('AE-1', 'Agencia y corporización', 'Agencia: aprende de la retroalimentación y elige acciones para perseguir metas, respondiendo con flexibilidad a metas en competencia.'),
+    ('AE-2', 'Agencia y corporización', 'Corporización: modela cómo sus acciones cambian sus entradas y usa ese modelo para percibir o controlar.'),
+]
+
+# Límite declarado: la Teoría de la Información Integrada (IIT) sostiene que la conciencia
+# depende del sustrato físico y no del software; según IIT ningún programa en hardware digital
+# convencional la alcanzaría, cumpla o no los indicadores de arriba.
+CAVEAT = (
+    'Según la Teoría de la Información Integrada, la conciencia depende del sustrato físico y '
+    'no del software: bajo esa teoría, cumplir estos indicadores no alcanza. No hay consenso '
+    'científico ni un test aceptado de conciencia en máquinas.')
+
+VERSION = 3
 
 
 def charter() -> dict:
-    c = {'version': VERSION, 'mission': MISSION, 'principles': list(PRINCIPLES), 'safety': SAFETY}
-    c['sha'] = sha256(canonical({'m': MISSION, 'p': PRINCIPLES, 's': SAFETY, 'v': VERSION}))
+    c = {'version': VERSION, 'mission': MISSION, 'objective': OBJECTIVE,
+         'principles': list(PRINCIPLES), 'safety': SAFETY, 'caveat': CAVEAT,
+         'indicators': [{'id': i, 'theory': t, 'criterion': d, 'status': 'sin evaluar'}
+                        for i, t, d in INDICATORS]}
+    c['sha'] = sha256(canonical({'m': MISSION, 'o': OBJECTIVE, 'p': PRINCIPLES, 's': SAFETY,
+                                 'i': INDICATORS, 'v': VERSION}))
     return c
+
+
+def seed_agenda(store: Store) -> int:
+    """Encola (una sola vez) la autoevaluación contra los indicadores y un tema por indicador.
+    La autoevaluación entra activa; los 14 temas entran como propuestas para aprobar."""
+    from . import agenda
+    n = 0
+    items = [('indicator:ALL', 'Autoevaluación contra los indicadores de conciencia',
+              'Evaluar la arquitectura actual de VUPPIA contra los 14 indicadores de conciencia '
+              '(RPT, GWT, HOT, AST, PP, AE): cuáles cumple, cuáles no y con qué evidencia; '
+              'proponer un experimento medible para el primero que falte.', 'active', 3.5)]
+    for i, t, d in INDICATORS:
+        items.append((f'indicator:{i}', f'Indicador {i} ({t})',
+                      f'¿Cumple VUPPIA el indicador {i}? Criterio: {d} Diseñar un mecanismo y un '
+                      f'experimento con línea de base para medirlo.', 'proposed', 2.0))
+    for note, topic, question, status, prio in items:
+        if store.one('SELECT 1 FROM agenda WHERE note=?', (note,)):
+            continue
+        agenda.add(store, topic, question, status=status, priority=prio, origin='charter', note=note)
+        n += 1
+    return n
 
 
 def record(store: Store) -> dict:
@@ -62,6 +125,7 @@ def record(store: Store) -> dict:
             db.execute("INSERT OR REPLACE INTO kv(k,v) VALUES('mission_charter',?)",
                        (json.dumps(c, ensure_ascii=False),))
             store._append_in_tx('mission_charter_set', {'sha': c['sha'], 'version': c['version']})
+        seed_agenda(store)
     except Exception:                                   # noqa: BLE001
         pass
     return c
