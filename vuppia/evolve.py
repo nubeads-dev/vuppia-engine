@@ -59,6 +59,23 @@ SKILLS = {
 }
 
 
+def _bench_spec(store: Store, skill: str, purpose: str = 'candidate') -> dict:
+    """Banco con el que se evalúa un skill. Para memory_rank, si hay suficientes recuerdos
+    REALES, se usa el banco de datos reales (verdad = procedencia, no una fórmula): la
+    evaluación de candidatos usa la partición de desarrollo y la repetición independiente la
+    de reserva. Si no alcanza (tests, base vacía), cae al banco sintético histórico."""
+    spec = skill_spec(skill)
+    if skill == 'memory_rank':
+        from . import memory_real
+        if memory_real.available(store):
+            memory_real.bind(store, 'holdout' if purpose == 'holdout' else 'dev')
+            return {**spec, 'bench': 'real', 'regimes': list(memory_real.REGIMES),
+                    'make': lambda reg, seed: memory_real.make_instance(reg, seed),
+                    'records': memory_real.instance_to_records,
+                    'grade': memory_real.grade}
+    return {**spec, 'bench': 'sintetico'}
+
+
 def skill_spec(skill: str) -> dict:
     if skill not in SKILLS:
         raise ValueError('skill evolucionable desconocida: ' + skill)
@@ -178,7 +195,7 @@ REGRESSION_TOL = 0.005
 
 def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'lab', *,
              record: bool = True, purpose: str = 'candidate') -> dict:
-    spec = skill_spec(skill)
+    spec = _bench_spec(store, skill, purpose)
     candidate_check(candidate_source, spec['func'])
     # Incumbente a comparar. against='lab' (default): la versión en lab (para promoción a lab).
     # against='production': lo que corre en producción; si producción está vacía, la SEMILLA
@@ -209,6 +226,7 @@ def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'la
     per_regime = []
     paired_cand, paired_inc = [], []     # unidades pareadas (régimen × réplica) para la significancia
     cand_scores, inc_scores = [], []     # medias por régimen (para no-regresión)
+    fts_scores = []                      # referencia: orden que hoy devuelve la búsqueda (banco real)
     candidate_errors = []
     for regime, seed in seeds.items():
         reg_c, reg_i = [], []
@@ -219,6 +237,8 @@ def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'la
             if 'error' in c:
                 candidate_errors.append({'regime': regime, 'error': c['error']})
             reg_c.append(c['score']); reg_i.append(i['score'])
+            if c.get('fts') is not None:
+                fts_scores.append(c['fts'])
             paired_cand.append(c['score']); paired_inc.append(i['score'])
         cmean = sum(reg_c) / len(reg_c); imean = sum(reg_i) / len(reg_i)
         per_regime.append({'regime': regime, 'candidate': {'score': round(cmean, 6)},
@@ -243,6 +263,8 @@ def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'la
                 'worst_regime_delta': worst_delta, 'paired': stat,
                 'improved': improved, 'no_regression': no_regression, 'aggregate_improves': aggregate_improves,
                 'replicas_per_regime': replicas, 'paired_units': len(paired_cand),
+                'bench': spec.get('bench', 'sintetico'), 'split': ('reserva' if purpose == 'holdout' else 'desarrollo'),
+                'fts_mean': (round(sum(fts_scores) / len(fts_scores), 6) if fts_scores else None),
                 'candidate_errors': candidate_errors}
     # Solo las evaluaciones de CANDIDATOS (y su repetición independiente) van a skill_evals.
     # El monitoreo de lo ya incorporado va a skill_checks (record=False): así re-evaluar el mismo
@@ -352,6 +374,12 @@ def independent_gate(store: Store, skill: str, candidate_source: str, against: s
     if not second['improved']:
         out['reason'] = 'no se repite la mejora en la evaluación independiente'
         return out
+    # Banco real: además debe superar al orden que HOY devuelve la búsqueda (FTS), medido en la
+    # reserva. Si no le gana a lo que ya se usa, incorporarlo no mejora ninguna decisión.
+    if second.get('fts_mean') is not None and second['candidate_mean'] <= second['fts_mean'] + MARGIN:
+        out['reason'] = (f"no supera al orden de búsqueda actual en la reserva "
+                         f"({second['candidate_mean']:.4f} vs FTS {second['fts_mean']:.4f})")
+        return out
     inc_src = _source_of(store, skill, first['incumbent_sha']) or seed_source(skill)
     aa = evaluate(store, skill, inc_src, against=against, record=False)
     out['aa'] = {'mean_diff': round(aa['candidate_mean'] - aa['incumbent_mean'], 9),
@@ -370,6 +398,13 @@ def independent_gate(store: Store, skill: str, candidate_source: str, against: s
 def promote_lab(store: Store, skill: str, candidate_source: str, generator: str | None = None) -> dict:
     analysis = evaluate(store, skill, candidate_source)
     if not analysis['improved']:
+        # Se guarda el código rechazado (sin mover ningún puntero) para que el generador lo vea
+        # y no lo repita, y para que quede auditable qué se probó.
+        try:
+            register_version(store, skill, candidate_source, origin='rejected_candidate',
+                             parent_sha=analysis['incumbent_sha'], generator=generator)
+        except Exception:                               # noqa: BLE001
+            pass
         return {'promoted': False, 'reason': 'no supera al incumbente en todos los regímenes OOD',
                 'analysis': analysis}
     inc_sha = analysis['incumbent_sha']
@@ -579,10 +614,15 @@ PROMPTS = {
         'y ser monótona creciente en cada variable. El objetivo es GENERALIZAR, no memorizar casos.'),
     'rank_memories': ('Mejorás UNA función Python aislada de recuperación de memoria, no la conciencia. '
         'Devolvés SOLO código Python válido que defina rank_memories(item). Sin markdown, sin imports, '
-        'sin exec/eval, sin red ni archivos, sin clases ni try. item es un dict con overlap, recency, '
-        'trust, specificity, contradiction (en [0,1]; contradiction es 1 si el recuerdo contradice la '
-        'consulta). La salida es una relevancia en [0,1]: debe subir con overlap, trust y specificity, '
-        'y BAJAR fuerte cuando contradiction=1. Generalizar, no memorizar casos.'),
+        'sin exec/eval, sin red ni archivos, sin clases ni try. item es un dict con cinco features en '
+        '[0,1]: overlap (fracción de términos de la consulta presentes en el recuerdo), recency '
+        '(1 = recién creado), trust (1.0 medido por experimento, 0.6 derivado, 0.3 sin verificar), '
+        'specificity (riqueza de términos y números), contradiction (1 si el recuerdo fue refutado o '
+        'retractado). La salida es una relevancia numérica finita; solo importa el ORDEN que induce. '
+        'Se evalúa con NDCG@10 sobre recuerdos REALES: relevante = hallazgo medido de la misma familia '
+        'de experimentos que la consulta. No asumas el signo de ninguna feature: guiate por los datos '
+        'de desarrollo que se te dan. La evaluación final usa datos de reserva que no ves. '
+        'Generalizar, no memorizar casos.'),
 }
 
 
@@ -648,22 +688,58 @@ def generate_candidate(store: Store, skill: str, proposer) -> str:
                         'más audaz (no cosmético), manteniendo la robustez en todos los regímenes.')
         except Exception:
             pass
-    user = ('Módulo actual:\n' + inc_source + hint + '\n\nProponé una versión mejor. Fijate si el módulo '
-            'actual IGNORA señales disponibles (en item) que deberían importar: usalas. Solo el código.')
+    extra = ''
+    if skill == 'memory_rank':
+        try:
+            from . import memory_real
+            if memory_real.available(store):
+                extra += ('\n\nDatos de DESARROLLO (media de cada feature entre recuerdos relevantes e '
+                          'irrelevantes): ' + json.dumps(memory_real.dev_diagnostics(store), ensure_ascii=False))
+        except Exception:                               # noqa: BLE001
+            pass
+    # Intentos anteriores rechazados (código + resultado), para no repetirlos.
+    try:
+        prev = store.q("SELECT v.source, e.analysis FROM skill_evals e JOIN skill_versions v ON v.skill=e.skill "
+                       "AND v.sha=e.candidate_sha WHERE e.skill=? AND e.decision='rejected' AND "
+                       "COALESCE(e.purpose,'candidate')='candidate' ORDER BY e.id DESC LIMIT 3", (skill,))
+        for psrc, pan in prev:
+            pa = json.loads(pan)
+            if pa.get('bench') != 'real' and skill == 'memory_rank':
+                continue
+            extra += ('\n\nIntento RECHAZADO anterior (media candidato ' + str(pa.get('candidate_mean')) +
+                      ' vs vigente ' + str(pa.get('incumbent_mean')) + ', peor régimen ' +
+                      str(pa.get('worst_regime_delta')) + '):\n' + psrc[:900])
+    except Exception:                                   # noqa: BLE001
+        pass
+    user = ('Módulo actual:\n' + inc_source + hint + extra + '\n\nProponé una versión mejor y DISTINTA de '
+            'las rechazadas. Fijate si el módulo actual IGNORA señales disponibles (en item) que deberían '
+            'importar: usalas. Solo el código.')
     # Generar código es ocasional pero la calidad importa mucho: usamos el modelo FUERTE
     # (120b) para proponer, no el 20b del motor. El worker tiene GROQ_API_KEY, así que lo
     # construimos directo si no hay un coder configurado por env.
     coder = None
     try:
         from .providers import from_env, Groq
-        coder = from_env(store, 'coder') or from_env(store, 'chat')
+        from . import providers as _pv
+        # Escribir código es donde más pesa la calidad del modelo: hasta 2 veces por día y por
+        # skill lo escribe el carril pago (dentro del tope propio del motor y del tope general).
+        if _pv.engine_paid_cap() > 0:
+            fr = from_env(store, 'frontier')
+            if fr is not None:
+                hoy = store.one("SELECT COUNT(*) FROM llm_calls WHERE day=? AND provider=? AND model=? AND "
+                                "purpose='evolve_generate' AND status='ok'",
+                                (utc()[:10], fr.name, fr.model))[0]
+                if hoy < 2 * len(LOW_RISK_SKILLS) and _pv.engine_paid_spent(store, fr) + 0.05 <= _pv.engine_paid_cap():
+                    coder = fr
+        coder = coder or from_env(store, 'coder') or from_env(store, 'chat')
         if coder is None and os.getenv('GROQ_API_KEY'):
             coder = Groq(store, 'openai/gpt-oss-120b')
     except Exception:                                   # noqa: BLE001
         coder = None
     coder = coder or proposer
     try:
-        raw = coder.complete(system, user, purpose='evolve_generate', max_tokens=1500, temperature=0.6)
+        raw = coder.complete(system, user, purpose='evolve_generate', max_tokens=1500,
+                             temperature=(None if getattr(coder, 'name', '') == 'anthropic' else 0.6))
     except Exception:                                   # noqa: BLE001
         # Si el modelo fuerte está topado (cuota diaria) u otro error, caemos al del motor.
         if coder is not proposer:

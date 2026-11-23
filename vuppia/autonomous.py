@@ -188,6 +188,16 @@ def tick(store: Store, cfg: dict) -> dict:
     except Exception:                                   # noqa: BLE001
         pass
 
+    # 0-bis) Trabajos de laboratorio pedidos por el operador (diagnóstico del banco real,
+    # simulacro de rollback): corren acá porque necesitan el sandbox, que solo tiene el worker.
+    try:
+        from . import labjobs
+        lj = labjobs.run_pending(store)
+        if lj:
+            did['actions'].append({'lab_job': lj})
+    except Exception as exc:                            # noqa: BLE001
+        did['errors'].append('lab_job: ' + repr(exc)[:120])
+
     # 1) Integridad de la bitácora (gratis, siempre).
     try:
         ok = store.verify_ledger()['ok']
@@ -434,7 +444,10 @@ def run_forever(db_path, *, interval_s=900, max_iterations=0, stop_file='VUPPIA_
     Se detiene limpio ante VUPPIA_STOP, SIGTERM/SIGINT o presupuesto diario agotado si así se
     configura. Cada tick está aislado: una excepción no tumba el loop."""
     cfg = {'stop_file': stop_file, 'experiments': experiments, 'evolve': evolve_flag,
-           'evolve_skills': ['hypothesis', 'memory_rank']}
+           # Solo memory_rank: es el único skill con banco de DATOS REALES. 'hypothesis' se mide
+           # contra un banco sintético de fórmula adivinable, así que mejorarlo no significa nada
+           # hasta que tenga un banco real: queda fuera del ciclo autónomo.
+           'evolve_skills': ['memory_rank']}
     stop = _Stop()
     store = Store(db_path)
     _ensure_kv(store)

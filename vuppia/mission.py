@@ -119,7 +119,12 @@ def plan_ai(store: Store, proposer: Provider, parent_memory=None) -> dict:
     # decisión. Se complementa con lo más reciente. Todo entra como DATO no verificado.
     query = ' '.join(s['description'] for s in PROTOCOLS.values())[:400]
     try:
-        relevant = memory.search(store, query, limit=8, rerank_mode='shadow')
+        # El reordenamiento con la versión de PRODUCCIÓN solo se usa si el operador habilitó la
+        # incorporación automática (archivo AUTOAPPLY_OK); si no, sigue en observación (shadow).
+        import os as _os
+        from . import providers as _pv
+        _mode = 'active' if _os.path.exists(_os.path.join(_pv.data_dir(), 'AUTOAPPLY_OK')) else 'shadow'
+        relevant = memory.search(store, query, limit=8, rerank_mode=_mode)
     except Exception:                                 # noqa: BLE001 - nunca romper la planificación
         relevant = []
     recent = relevant + [m for m in memory.recent(store, 8) if m['id'] not in {r['id'] for r in relevant}]

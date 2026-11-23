@@ -595,6 +595,31 @@ def admin_action(action, tok, args=None):
         return {'ok': True, 'started': True, 'msg': 'Banco corriendo en segundo plano. '
                 'Consultá con action=ab_result en 2-5 min.'}
 
+    if action in ('lab_run', 'lab_result'):
+        st = None
+        try:
+            st, _ = _admin_store()
+            import json as _json
+            import sys as _sys
+            if '/app' not in _sys.path:
+                _sys.path.insert(0, '/app')
+            from vuppia import labjobs
+            job = str((args or {}).get('job') or '')
+            if job not in ('real_bench', 'rollback_drill'):
+                return {'ok': False, 'error': 'job: real_bench | rollback_drill'}
+            if action == 'lab_run':
+                labjobs.request(st, job)
+                return {'ok': True, 'note': 'pedido; lo corre el worker en el próximo tick'}
+            row = st.one("SELECT v FROM kv WHERE k=?", ('lab_result:' + job,))
+            return {'ok': True, 'result': _json.loads(row[0]) if row and row[0] else None}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            try:
+                st.db.close()
+            except Exception:
+                pass
+
     if action == 'ab_result':
         st = None
         try:
