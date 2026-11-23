@@ -119,10 +119,7 @@ def plan_ai(store: Store, proposer: Provider, parent_memory=None) -> dict:
     # decisión. Se complementa con lo más reciente. Todo entra como DATO no verificado.
     query = ' '.join(s['description'] for s in PROTOCOLS.values())[:400]
     try:
-        # 'active' usa el ranker promovido a PRODUCCIÓN; si no hay versión promovida o falla,
-        # memory.search cae solo al orden FTS. (Antes era 'shadow': el ranker promovido se
-        # calculaba pero nunca decidía nada.)
-        relevant = memory.search(store, query, limit=8, rerank_mode='active')
+        relevant = memory.search(store, query, limit=8, rerank_mode='shadow')
     except Exception:                                 # noqa: BLE001 - nunca romper la planificación
         relevant = []
     recent = relevant + [m for m in memory.recent(store, 8) if m['id'] not in {r['id'] for r in relevant}]

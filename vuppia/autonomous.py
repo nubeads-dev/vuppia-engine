@@ -196,7 +196,7 @@ def tick(store: Store, cfg: dict) -> dict:
     if cfg.get('experiments', True):
         try:
             try:
-                plan = mission.plan_policy(store, channel=evolve.runtime_channel(store, 'hypothesis'))
+                plan = mission.plan_policy(store)
                 did['actions'].append({'seleccion': 'politica', 'regret': plan.get('planner', {}).get('regret')})
             except Exception as exc:                       # noqa: BLE001
                 plan = mission.plan_rule(store)
