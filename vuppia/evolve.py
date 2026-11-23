@@ -171,6 +171,10 @@ def _eval_on_regime(source: str, regime: str, seed: int, spec: dict) -> dict:
     return spec['grade'](scores, inst)
 
 
+# Tolerancia de regresión en el peor régimen (la usan evaluate y monitor_production).
+REGRESSION_TOL = 0.005
+
+
 def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'lab') -> dict:
     spec = skill_spec(skill)
     candidate_check(candidate_source, spec['func'])
@@ -227,7 +231,6 @@ def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'la
     # Criterio: (a) NO regresa en ningún régimen OOD (tolerancia de ruido), y
     # (b) mejora AGREGADA significativa por encima del margen. Así un candidato que gana
     # en 5 regímenes pero rompe 1 (p. ej. sobreajuste a la saturación) NO se promueve.
-    REGRESSION_TOL = 0.005
     no_regression = worst_delta > -REGRESSION_TOL
     aggregate_improves = stat['ci'][0] > MARGIN and stat['p_value'] < 0.05
     improved = bool(no_error and no_regression and aggregate_improves and worst_delta > 0)
