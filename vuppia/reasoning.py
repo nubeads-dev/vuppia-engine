@@ -243,6 +243,20 @@ def deliberate(provider, system, user, question, *, fallback=None, generate, for
     if not force_hard and (not enabled() or plan['tier'] == 'easy' or not _quota_ok()):
         return g(sys_main, user)
 
+    # 0) Carril FRONTERA (VUPPIA_FRONTIER=proveedor:modelo, pago, con tope en USD): si esta
+    #    configurado y hay presupuesto, la pregunta dificil la responde el modelo frontera y no
+    #    se gasta en el verificador. Sin key o sin presupuesto, cae al camino gratis de abajo.
+    if not force_hard:
+        try:
+            from . import providers
+            frontier = providers.from_env(provider.store, 'frontier')
+            if frontier is not None:
+                out = generate(frontier, sys_main, user)
+                if (out or '').strip():
+                    return out
+        except Exception:                               # noqa: BLE001
+            pass
+
     # 1+2) Borrador -> critica -> correccion (solo en preguntas dificiles y con cuota).
     draft = g(sys_main, user)
     try:

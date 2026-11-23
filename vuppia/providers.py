@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -35,6 +36,8 @@ PRICES = {
     'gemini-2.0-flash': (0.0, 0.0), 'gemini-2.5-flash': (0.0, 0.0),
 }
 MAX_RESPONSE_BYTES = 200_000
+# Modelos declarados por el operador en VUPPIA_POOL (pool de tiers GRATIS): costo 0.
+_POOL_FREE: set = set()
 
 
 class ProviderError(RuntimeError):
@@ -50,6 +53,8 @@ def price(model: str) -> tuple[float, float]:
     extra = os.getenv('VUPPIA_PRICES')
     if extra:
         table.update({k: tuple(v) for k, v in json.loads(extra).items()})
+    if model not in table and model in _POOL_FREE:
+        return (0.0, 0.0)
     if model not in table:
         raise ProviderError(f'Modelo sin precio conocido: {model}. Definilo en VUPPIA_PRICES.')
     return table[model]
@@ -184,6 +189,11 @@ def _retry_after_seconds(hdrs, default):
         return default
 
 
+# Cuando el que llama es el POOL, un 429 no se reintenta durmiendo: se falla rapido para
+# rotar al siguiente proveedor (otro balde de cuota). Por hilo, para no pisarse con el chat.
+_FAST = threading.local()
+
+
 def _post(url: str, payload: dict, headers: dict, timeout=90) -> dict:
     req = urllib.request.Request(url, json.dumps(payload).encode(), method='POST',
                                  headers={'Content-Type': 'application/json', 'User-Agent': 'vuppia-sofia/1.0 (+https://vuppia.com)', **headers})
@@ -200,6 +210,8 @@ def _post(url: str, payload: dict, headers: dict, timeout=90) -> dict:
                 _capture_rl(e.headers)
             except Exception:                           # noqa: BLE001
                 pass
+            if e.code == 429 and getattr(_FAST, 'on', False):
+                raise ProviderError('HTTP 429') from e
             if e.code in (429, 500, 502, 503, 529) and attempt < 2:
                 wait = _retry_after_seconds(getattr(e, 'headers', None) or {}, 2 ** attempt * 3) \
                     if e.code == 429 else 2 ** attempt * 3
@@ -224,6 +236,7 @@ class Anthropic(Provider):
         data = _post('https://api.anthropic.com/v1/messages', body,
                      {'x-api-key': key, 'anthropic-version': '2023-06-01'})
         text = ''.join(p.get('text', '') for p in data.get('content', []) if p.get('type') == 'text')
+        _LAST_FINISH['reason'] = 'length' if data.get('stop_reason') == 'max_tokens' else 'stop'
         u = data.get('usage', {})
         return text, u.get('input_tokens'), u.get('output_tokens')
 
@@ -306,14 +319,102 @@ class Gemini(_OAICompat):
     KEY_ENV = 'GEMINI_API_KEY'
 
 
+class Cerebras(_OAICompat):
+    """GRATIS (tier free). https://cloud.cerebras.ai para la key (CEREBRAS_API_KEY)."""
+    name = 'cerebras'
+    API_URL = 'https://api.cerebras.ai/v1/chat/completions'
+    KEY_ENV = 'CEREBRAS_API_KEY'
+
+
+_CLASSES = {'anthropic': Anthropic, 'openai': OpenAI, 'groq': Groq, 'openrouter': OpenRouter,
+            'gemini': Gemini, 'cerebras': Cerebras}
+_KEY_ENV = {'anthropic': 'ANTHROPIC_API_KEY', 'openai': 'OPENAI_API_KEY', 'groq': 'GROQ_API_KEY',
+            'openrouter': 'OPENROUTER_API_KEY', 'gemini': 'GEMINI_API_KEY', 'cerebras': 'CEREBRAS_API_KEY'}
+
+# Enfriamiento por miembro del pool (por proceso): (proveedor, modelo) -> epoch hasta el que
+# no se lo intenta. 429 = cuota agotada (corto); 4xx de config = modelo/key mal (largo).
+_COOL: dict = {}
+
+
+class Pool(Provider):
+    """Varios proveedores GRATIS usados en conjunto. En cada llamada prueba los miembros en
+    orden de preferencia (el primero es el de mejor calidad) y, si uno esta topado (429) o
+    falla, rota al siguiente: se suman las cuotas de todos. Cada miembro registra su propia
+    llamada en llm_calls (presupuesto, tokens y auditoria intactos). NO suma inteligencia:
+    cada respuesta la da un solo modelo."""
+    name = 'pool'
+
+    def __init__(self, store: Store, members: list):
+        super().__init__(store, 'pool')
+        self.members = members
+        self.last_used = None
+
+    def _ready(self):
+        now = time.time()
+        return [m for m in self.members if _COOL.get((m.name, m.model), 0) <= now]
+
+    def has_capacity(self) -> bool:
+        return bool(self._ready())
+
+    def complete(self, system: str, user: str, *, purpose: str, max_tokens: int = 800,
+                 temperature: float | None = None, hypothesis_id: int | None = None) -> str:
+        ready = self._ready()
+        if not ready:
+            raise ProviderError('pool: todos los proveedores gratis estan en enfriamiento (HTTP 429)')
+        last = None
+        for m in ready:
+            _FAST.on = True
+            try:
+                text = m.complete(system, user, purpose=purpose, max_tokens=max_tokens,
+                                  temperature=temperature, hypothesis_id=hypothesis_id)
+                self.last_used = m
+                self.last_call_id = getattr(m, 'last_call_id', None)
+                return text
+            except BudgetExceeded:
+                raise
+            except Exception as exc:                    # noqa: BLE001
+                last = exc
+                msg = str(exc)
+                if 'HTTP 429' in msg:
+                    try:
+                        wait = min(float(_LAST_RL.get('retry_after') or 60), 120.0)
+                    except Exception:                   # noqa: BLE001
+                        wait = 60.0
+                    _COOL[(m.name, m.model)] = time.time() + max(wait, 20.0)
+                elif any(c in msg for c in ('HTTP 400', 'HTTP 401', 'HTTP 403', 'HTTP 404', 'Falta ')):
+                    _COOL[(m.name, m.model)] = time.time() + 1800   # modelo o key mal configurados
+                else:
+                    _COOL[(m.name, m.model)] = time.time() + 30
+            finally:
+                _FAST.on = False
+        raise ProviderError('pool: fallaron todos los proveedores; ultimo: ' + str(last)[:120])
+
+
+def _pool_from_env(store: Store, role: str):
+    """VUPPIA_POOL_<ROLE> (o VUPPIA_POOL): lista 'proveedor:modelo,proveedor:modelo,...' en
+    orden de preferencia. Se saltean los proveedores cuya key no esta cargada en el servidor."""
+    spec = os.getenv('VUPPIA_POOL_' + role.upper()) or os.getenv('VUPPIA_POOL') or ''
+    members = []
+    for item in spec.split(','):
+        prov, _, model = item.strip().partition(':')
+        cls = _CLASSES.get(prov)
+        if not cls or not model or not os.getenv(_KEY_ENV.get(prov, '')):
+            continue
+        _POOL_FREE.add(model)
+        members.append(cls(store, model))
+    return Pool(store, members) if members else None
+
+
 def from_env(store: Store, role: str) -> Provider | None:
-    """role: proposer | reviewer | subject. Ej.: VUPPIA_PROPOSER=anthropic:claude-sonnet-5-5"""
+    """role: proposer | reviewer | subject | chat | frontier. Ej.: VUPPIA_PROPOSER=groq:openai/gpt-oss-20b
+    o VUPPIA_PROPOSER=pool (usa VUPPIA_POOL_PROPOSER / VUPPIA_POOL)."""
     spec = os.getenv('VUPPIA_' + role.upper())
     if not spec:
         return None
+    if spec.strip() == 'pool':
+        return _pool_from_env(store, role)
     prov, _, model = spec.partition(':')
-    cls = {'anthropic': Anthropic, 'openai': OpenAI,
-           'groq': Groq, 'openrouter': OpenRouter, 'gemini': Gemini}.get(prov)
+    cls = _CLASSES.get(prov)
     if not cls or not model:
         raise ProviderError(f'VUPPIA_{role.upper()} inválido: usar proveedor:modelo')
     return cls(store, model)

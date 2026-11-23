@@ -199,7 +199,7 @@ def tick(store: Store, cfg: dict) -> dict:
     # 3) Investigación externa + hipótesis por IA + evolución de código: con IA y presupuesto,
     # o con un proveedor GRATUITO (costo real $0: no consume presupuesto, así que no se bloquea en 0).
     proposer = from_env(store, 'proposer')
-    _free = bool(proposer) and getattr(proposer, 'name', '') in ('groq', 'openrouter', 'gemini')
+    _free = bool(proposer) and getattr(proposer, 'name', '') in ('groq', 'openrouter', 'gemini', 'cerebras', 'pool')
     # Conteo histórico de ticks (gatea los pasos periódicos). Se calcula SIEMPRE, afuera del
     # freno por cuota, para que los pasos SIN LLM (auto-aplicación y monitoreo de producción,
     # puro sandbox/CPU) no queden rehenes de la cuota del modelo.
@@ -208,7 +208,8 @@ def tick(store: Store, cfg: dict) -> dict:
         # Alguien está chateando: le cedemos la cuota del modelo este tick (el experimento
         # por regla ya corrió arriba, así que el motor igual avanza sin tocar el LLM).
         did['actions'].append({'chat_priority': 'cedí la cuota del modelo al chat'})
-    elif proposer and _low_quota(store):
+    elif proposer and (not proposer.has_capacity() if getattr(proposer, 'name', '') == 'pool'
+                       else _low_quota(store)):
         # Queda poca cuota por minuto del proveedor: el motor sipea y deja aire para el chat.
         did['actions'].append({'quota_brake': 'poca cuota del modelo; salteo pasos de LLM este tick'})
     elif proposer and (_free or _budget_left(store) > 0.02):
