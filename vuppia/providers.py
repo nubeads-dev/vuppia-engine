@@ -451,7 +451,7 @@ class Pool(Provider):
     def _backstop_ok(self) -> bool:
         """El respaldo pago se habilita solo si queda tope propio del motor, y RACIONADO a lo
         largo del día (tope × fracción del día transcurrida) para no quemarlo en la primera hora."""
-        if self.backstop is None:
+        if self.backstop is None or _COOL.get(('backstop', self.backstop.model), 0) > time.time():
             return False
         cap = engine_paid_cap()
         if cap <= 0:
@@ -461,8 +461,16 @@ class Pool(Provider):
         return engine_paid_spent(self.store, self.backstop) + 0.01 <= allowed
 
     def _via_backstop(self, system, user, purpose, max_tokens, temperature, hypothesis_id):
-        text = self.backstop.complete(system, user, purpose=purpose, max_tokens=min(max_tokens, 700),
-                                      temperature=temperature, hypothesis_id=hypothesis_id)
+        # Sin 'temperature': el modelo de respaldo la rechaza (HTTP 400 visto en plan_ai el 23/11).
+        # Si igual falla, se lo enfría 30 min para no repetir llamadas fallidas con reserva de costo.
+        try:
+            text = self.backstop.complete(system, user, purpose=purpose, max_tokens=min(max_tokens, 900),
+                                          temperature=None, hypothesis_id=hypothesis_id)
+        except BudgetExceeded:
+            raise
+        except Exception:                               # noqa: BLE001
+            _COOL[('backstop', self.backstop.model)] = time.time() + 1800
+            raise
         self.last_used = self.backstop
         self.last_call_id = getattr(self.backstop, 'last_call_id', None)
         return text
