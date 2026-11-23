@@ -15,8 +15,12 @@ def _count(store: Store, sql, args=()):
 
 def progress(store: Store) -> dict:
     """Métricas de progreso reales (acumulativas)."""
-    verified_improvements = _count(store, "SELECT COUNT(*) FROM skill_evals WHERE decision='improved'")
-    modules_evolved = _count(store, "SELECT COUNT(DISTINCT skill) FROM skill_evals WHERE decision='improved'")
+    # Antes contaba filas de skill_evals, que crecían cada vez que el monitoreo re-evaluaba el
+    # mismo código. Ahora cuenta versiones DISTINTAS incorporadas con evaluación independiente.
+    from . import evolve as _ev
+    verified_improvements = _ev.verified_improvements(store)
+    modules_evolved = _count(store, "SELECT COUNT(DISTINCT skill) FROM skill_releases WHERE "
+                                    "channel='production' AND kind='promotion' AND holdout_eval_id IS NOT NULL")
     supported = _count(store, "SELECT COUNT(*) FROM memories WHERE kind='finding' AND status='supported'")
     refuted = _count(store, "SELECT COUNT(*) FROM memories WHERE kind='finding' AND status='refuted'")
     experiments = _count(store, 'SELECT COUNT(*) FROM hypotheses')

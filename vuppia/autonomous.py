@@ -138,10 +138,16 @@ def _self_question(store: Store, proposer):
     contexto = '; '.join(f'{q} -> {v}' for q, v in rows) or 'sin resultados aún'
     existentes = store.q("SELECT topic FROM agenda ORDER BY id DESC LIMIT 15")
     evitar = '; '.join(t[0] for t in existentes) or '(ninguna)'
-    system = ('Sos VUPPIA, una IA que investiga sus propias capacidades FUNCIONALES (no conciencia). '
-              'Generá UNA sola pregunta de investigación NUEVA, falsable, concreta y medible, distinta de '
-              'lo ya hecho. Sobre redes neuronales, calibración, incertidumbre, generalización, '
-              'metacognición funcional. Respondé SOLO la pregunta, una línea, sin explicación.')
+    # La pregunta nueva sale de la MISIÓN persistente (carta), no de un tema genérico de ML:
+    # rota por las líneas permanentes para que ninguna quede sin investigar.
+    from . import charter as _ch
+    _n = store.one("SELECT COUNT(*) FROM agenda WHERE origin='sofia'")[0]
+    linea = _ch.RESEARCH_LINES[_n % len(_ch.RESEARCH_LINES)]
+    system = ('Sos VUPPIA SOFÍA. Tu misión: ' + _ch.MISSION + ' Generá UNA sola pregunta de investigación '
+              'NUEVA, falsable, concreta y medible, distinta de lo ya hecho, dentro de esta línea: «' + linea +
+              '». Debe poder probarse con un experimento o prototipo en laboratorio, con control y métrica. '
+              'Medís propiedades FUNCIONALES; nunca las presentes como evidencia de experiencia subjetiva. '
+              'Respondé SOLO la pregunta, una línea, sin explicación.')
     user = ('Resultados recientes: ' + contexto + '\nTemas que YA tengo (no repitas): ' + evitar +
             '\nPregunta nueva:')
     try:
@@ -178,6 +184,7 @@ def tick(store: Store, cfg: dict) -> dict:
     try:
         from . import charter
         charter.record(store)
+        evolve.backfill_releases(store)
     except Exception:                                   # noqa: BLE001
         pass
 
@@ -257,22 +264,27 @@ def tick(store: Store, cfg: dict) -> dict:
                 promoted = False
                 try:
                     src = evolve.generate_candidate(store, skill, proposer)
-                    r = evolve.promote_lab(store, skill, src)
+                    gen = evolve.LAST_GENERATOR.get('model')
+                    r = evolve.promote_lab(store, skill, src, generator=gen)
                     promoted = bool(r.get('promoted'))
-                    did['actions'].append({'evolve': skill, 'promoted_to_lab': promoted})
+                    an = r.get('analysis') or {}
+                    # Decisión tomada por VUPPIA sola: queda en la bitácora con el modelo que
+                    # escribió el código, las métricas y el veredicto.
+                    store.append('autonomous_decision', {
+                        'tipo': 'candidato_de_codigo', 'skill': skill, 'generado_por': gen,
+                        'llm_call_id': evolve.LAST_GENERATOR.get('call_id'),
+                        'candidate_sha': an.get('candidate_sha'), 'incumbent_sha': an.get('incumbent_sha'),
+                        'eval_id': an.get('eval_id'), 'candidate_mean': an.get('candidate_mean'),
+                        'incumbent_mean': an.get('incumbent_mean'),
+                        'worst_regime_delta': an.get('worst_regime_delta'),
+                        'decision': 'promovido_a_lab' if promoted else 'rechazado'})
+                    did['actions'].append({'evolve': skill, 'promoted_to_lab': promoted, 'generado_por': gen})
                 except BudgetExceeded:
                     did['actions'].append({'evolve': skill, 'result': 'presupuesto agotado'}); break
                 except Exception as exc:               # noqa: BLE001
                     did['errors'].append(f'evolve {skill}: ' + repr(exc)[:120])
-                # Respaldo: si el LLM no mejoró, probar la mejora de referencia curada.
-                # El juez independiente la evalúa igual; si no mejora, la rechaza.
-                if not promoted:
-                    try:
-                        ref = evolve.try_reference(store, skill)
-                        if ref.get('status') == 'promovido':
-                            did['actions'].append({'evolve_reference': skill, 'promoted_to_lab': True})
-                    except Exception as exc:           # noqa: BLE001
-                        did['errors'].append(f'evolve_ref {skill}: ' + repr(exc)[:120])
+                # (La mejora de referencia curada a mano ya no entra al ciclo autónomo: una
+                #  versión escrita por un humano o por otra IA no es una automejora de VUPPIA.)
         # (El monitoreo de producción y la auto-aplicación se movieron AFUERA del freno por
         #  cuota, más abajo: no usan LLM y no deben depender de la cuota del modelo.)
         # 3b-bis) Estudio sobre el MODELO REAL (protocolos LLM): caro (muchas llamadas), así que
@@ -316,6 +328,10 @@ def tick(store: Store, cfg: dict) -> dict:
             try:
                 mon = evolve.monitor_production(store, skill)
                 if mon.get('regressed'):
+                    store.append('autonomous_decision', {'tipo': 'rollback_automatico', 'skill': skill,
+                                                         'desde': mon.get('prod_sha'),
+                                                         'hacia': mon.get('rolled_back_to'),
+                                                         'worst_regime_delta': mon.get('worst_regime_delta')})
                     did['actions'].append({'auto_rollback': skill, 'to': mon.get('rolled_back_to')})
             except Exception as exc:                       # noqa: BLE001
                 did['errors'].append(f'monitor {skill}: ' + repr(exc)[:120])
@@ -331,6 +347,10 @@ def tick(store: Store, cfg: dict) -> dict:
         for skill in cfg.get('evolve_skills', ['hypothesis', 'memory_rank']):
             try:
                 ap = evolve.auto_apply(store, skill)
+                if ap.get('status') not in ('al_dia', 'ya_evaluado_sin_mejora'):
+                    store.append('autonomous_decision', {'tipo': 'incorporacion_a_produccion', 'skill': skill,
+                                                         'decision': ap.get('status'), 'motivo': ap.get('motivo'),
+                                                         'sha': ap.get('promoted_to_production')})
                 if ap.get('status') == 'aplicado':
                     did['actions'].append({'auto_apply': skill, 'to': (ap.get('promoted_to_production') or '')[:12]})
             except Exception as exc:                       # noqa: BLE001

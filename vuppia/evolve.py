@@ -100,13 +100,14 @@ def _materialize(skill: str, sha: str, source: str) -> Path:
     return p
 
 
-def register_version(store: Store, skill: str, source: str, origin: str, parent_sha=None) -> str:
+def register_version(store: Store, skill: str, source: str, origin: str, parent_sha=None,
+                     generator: str | None = None) -> str:
     candidate_check(source, skill_spec(skill)['func'])
     sha = sha256(source)
     _materialize(skill, sha, source)
     with store.tx() as db:
-        db.execute('INSERT OR IGNORE INTO skill_versions(skill,sha,source,parent_sha,origin,created_at) '
-                   'VALUES(?,?,?,?,?,?)', (skill, sha, source, parent_sha, origin, utc()))
+        db.execute('INSERT OR IGNORE INTO skill_versions(skill,sha,source,parent_sha,origin,created_at,generator) '
+                   'VALUES(?,?,?,?,?,?,?)', (skill, sha, source, parent_sha, origin, utc(), generator))
         if not db.execute('SELECT 1 FROM skill_pointers WHERE skill=? AND channel=?', (skill, 'lab')).fetchone():
             db.execute("INSERT INTO skill_pointers VALUES(?,'lab',?,?)", (skill, sha, utc()))
     return sha
@@ -175,7 +176,8 @@ def _eval_on_regime(source: str, regime: str, seed: int, spec: dict) -> dict:
 REGRESSION_TOL = 0.005
 
 
-def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'lab') -> dict:
+def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'lab', *,
+             record: bool = True, purpose: str = 'candidate') -> dict:
     spec = skill_spec(skill)
     candidate_check(candidate_source, spec['func'])
     # Incumbente a comparar. against='lab' (default): la versión en lab (para promoción a lab).
@@ -242,22 +244,137 @@ def evaluate(store: Store, skill: str, candidate_source: str, against: str = 'la
                 'improved': improved, 'no_regression': no_regression, 'aggregate_improves': aggregate_improves,
                 'replicas_per_regime': replicas, 'paired_units': len(paired_cand),
                 'candidate_errors': candidate_errors}
-    with store.tx() as db:
-        db.execute('INSERT INTO skill_evals(skill,candidate_sha,incumbent_sha,at,eval_seed_commit,eval_seed,'
-                   'analysis,decision,environment,code_fp) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                   (skill, cand_sha, inc_sha, utc(), commit, canonical(seeds), canonical(analysis),
-                    'improved' if improved else 'rejected', canonical(environment()),
-                    canonical(code_fingerprint())))
+    # Solo las evaluaciones de CANDIDATOS (y su repetición independiente) van a skill_evals.
+    # El monitoreo de lo ya incorporado va a skill_checks (record=False): así re-evaluar el mismo
+    # código no se anota como una mejora nueva.
+    if record:
+        with store.tx() as db:
+            cur = db.execute('INSERT INTO skill_evals(skill,candidate_sha,incumbent_sha,at,eval_seed_commit,'
+                             'eval_seed,analysis,decision,environment,code_fp,purpose) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                             (skill, cand_sha, inc_sha, utc(), commit, canonical(seeds), canonical(analysis),
+                              'improved' if improved else 'rejected', canonical(environment()),
+                              canonical(code_fingerprint()), purpose))
+            analysis['eval_id'] = cur.lastrowid
     return analysis
 
 
-def promote_lab(store: Store, skill: str, candidate_source: str) -> dict:
+def _source_of(store: Store, skill: str, sha: str | None) -> str | None:
+    if not sha:
+        return None
+    row = store.one('SELECT source FROM skill_versions WHERE skill=? AND sha=?', (skill, sha))
+    if row:
+        return row[0]
+    seed = seed_source(skill)
+    return seed if sha256(seed) == sha else None
+
+
+def record_release(store: Store, skill: str, channel: str, kind: str, prev_sha, new_sha: str,
+                   decided_by: str, *, analysis: dict | None = None, holdout: dict | None = None,
+                   note: str = '') -> int:
+    """Registro de versiones: UNA fila por incorporación o rollback, con versión anterior y
+    nueva, diff exacto, quién lo decidió, qué modelo escribió el código y las métricas y pruebas
+    que lo respaldan. Es la fuente de verdad de 'qué se incorporó y por qué'."""
+    import difflib
+    old_src = _source_of(store, skill, prev_sha) or seed_source(skill)
+    new_src = _source_of(store, skill, new_sha) or ''
+    diff = ''.join(difflib.unified_diff(old_src.splitlines(True), new_src.splitlines(True),
+                                        (prev_sha or 'semilla')[:12], new_sha[:12]))[:20000]
+    gen = store.one('SELECT generator, origin FROM skill_versions WHERE skill=? AND sha=?', (skill, new_sha))
+    generator = (gen[0] if gen and gen[0] else ('origen: ' + gen[1] if gen else None))
+    metrics = None
+    if analysis:
+        metrics = {k: analysis.get(k) for k in ('candidate_mean', 'incumbent_mean', 'worst_regime_delta',
+                                                 'paired_units', 'replicas_per_regime', 'per_regime',
+                                                 'seed_commit', 'incumbent_sha')}
+        metrics['paired'] = {k: (analysis.get('paired') or {}).get(k) for k in ('mean_diff', 'ci', 'p_value')}
+        if holdout:
+            metrics['holdout'] = {k: holdout.get(k) for k in ('candidate_mean', 'incumbent_mean',
+                                                             'worst_regime_delta', 'seed_commit')}
+    with store.tx() as db:
+        cur = db.execute('INSERT INTO skill_releases(skill,channel,kind,prev_sha,new_sha,at,decided_by,generator,'
+                         'eval_id,holdout_eval_id,metrics,diff,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                         (skill, channel, kind, prev_sha, new_sha, utc(), decided_by, generator,
+                          (analysis or {}).get('eval_id'), (holdout or {}).get('eval_id'),
+                          canonical(metrics) if metrics else None, diff, note[:500]))
+        store._append_in_tx('skill_release', {'id': cur.lastrowid, 'skill': skill, 'channel': channel,
+                                              'kind': kind, 'prev': prev_sha, 'new': new_sha,
+                                              'decided_by': decided_by})
+        return cur.lastrowid
+
+
+def backfill_releases(store: Store) -> int:
+    """Las versiones que ya estaban en producción antes del registro no tienen fila. Se
+    reconstruye UNA por skill, marcada como reconstruida y con el origen que consta (no se le
+    inventa autoría ni métricas: se adjunta la última evaluación registrada, si existe)."""
+    n = 0
+    for skill, sha in store.q("SELECT skill, sha FROM skill_pointers WHERE channel='production'"):
+        if store.one("SELECT 1 FROM skill_releases WHERE skill=? AND channel='production' AND new_sha=?",
+                     (skill, sha)):
+            continue
+        import json
+        last = store.one("SELECT id, analysis FROM skill_evals WHERE skill=? AND candidate_sha=? AND "
+                         "decision='improved' ORDER BY id DESC LIMIT 1", (skill, sha))
+        analysis = None
+        if last:
+            try:
+                analysis = json.loads(last[1]); analysis['eval_id'] = last[0]
+            except Exception:                           # noqa: BLE001
+                analysis = None
+        record_release(store, skill, 'production', 'promotion', sha256(seed_source(skill)), sha,
+                       'reconstruido', analysis=analysis,
+                       note='Fila reconstruida por la auditoría del 23/11/2026: la incorporación ocurrió '
+                            'antes de existir el registro. Sin evaluación independiente ni datos reales.')
+        n += 1
+    return n
+
+
+def verified_improvements(store: Store) -> int:
+    """Mejoras realmente incorporadas a producción: versiones DISTINTAS con evaluación de
+    candidato + repetición independiente. Las reconstruidas o importadas no cuentan."""
+    return store.one("SELECT COUNT(DISTINCT skill || ':' || new_sha) FROM skill_releases WHERE "
+                     "channel='production' AND kind='promotion' AND holdout_eval_id IS NOT NULL")[0]
+
+
+def independent_gate(store: Store, skill: str, candidate_source: str, against: str = 'production') -> dict:
+    """Puerta de incorporación. Exige TRES cosas:
+      1. evaluación del candidato contra la versión vigente (semillas nuevas, comprometidas antes);
+      2. una SEGUNDA evaluación independiente, con otras semillas, que también dé mejora;
+      3. control A/A: la versión vigente contra sí misma en el mismo arnés debe dar diferencia nula.
+    El candidato corre aislado en el sandbox y solo recibe features: no ve semillas, verdad ni
+    el banco, y no puede modificarlos."""
+    first = evaluate(store, skill, candidate_source, against=against, purpose='candidate')
+    out = {'skill': skill, 'first': first, 'passed': False}
+    if not first['improved']:
+        out['reason'] = 'no mejora en la primera evaluación'
+        return out
+    second = evaluate(store, skill, candidate_source, against=against, purpose='holdout')
+    out['holdout'] = second
+    if not second['improved']:
+        out['reason'] = 'no se repite la mejora en la evaluación independiente'
+        return out
+    inc_src = _source_of(store, skill, first['incumbent_sha']) or seed_source(skill)
+    aa = evaluate(store, skill, inc_src, against=against, record=False)
+    out['aa'] = {'mean_diff': round(aa['candidate_mean'] - aa['incumbent_mean'], 9),
+                 'worst_regime_delta': aa['worst_regime_delta'], 'improved': aa['improved']}
+    with store.tx() as db:
+        db.execute('INSERT INTO skill_checks(skill,sha,baseline_sha,at,kind,analysis,verdict) VALUES(?,?,?,?,?,?,?)',
+                   (skill, first['incumbent_sha'], first['incumbent_sha'], utc(), 'aa', canonical(out['aa']),
+                    'ok' if (abs(out['aa']['mean_diff']) < 1e-9 and not aa['improved']) else 'falla'))
+    if abs(out['aa']['mean_diff']) >= 1e-9 or aa['improved']:
+        out['reason'] = 'el control A/A no dio diferencia nula: el arnés no es confiable'
+        return out
+    out['passed'] = True
+    return out
+
+
+def promote_lab(store: Store, skill: str, candidate_source: str, generator: str | None = None) -> dict:
     analysis = evaluate(store, skill, candidate_source)
     if not analysis['improved']:
         return {'promoted': False, 'reason': 'no supera al incumbente en todos los regímenes OOD',
                 'analysis': analysis}
     inc_sha = analysis['incumbent_sha']
-    sha = register_version(store, skill, candidate_source, origin='evolved', parent_sha=inc_sha)
+    sha = register_version(store, skill, candidate_source, origin='evolved', parent_sha=inc_sha,
+                           generator=generator)
     with store.tx() as db:
         db.execute("UPDATE skill_pointers SET sha=?,updated_at=? WHERE skill=? AND channel='lab'",
                    (sha, utc(), skill))
@@ -301,6 +418,8 @@ def promote_production(store: Store, skill: str, sha: str, approval_token: str) 
             db.execute("INSERT INTO skill_pointers VALUES(?,'production',?,?)", (skill, full, utc()))
         store._append_in_tx('promote_production', {'skill': skill, 'sha': full, 'prev_sha': prev,
                                                    'approval_nonce': payload['nonce']})
+    record_release(store, skill, 'production', 'promotion', prev, full, 'operador_con_firma',
+                   note='aprobación firmada, nonce ' + str(payload['nonce'])[:24])
     return {'promoted_to_production': full, 'prev_sha': prev, 'approval_nonce': payload['nonce']}
 
 
@@ -310,7 +429,7 @@ def promote_production(store: Store, skill: str, sha: str, approval_token: str) 
 LOW_RISK_SKILLS = ('hypothesis', 'memory_rank')
 
 
-def promote_production_auto(store: Store, skill: str, sha: str, reason: str) -> dict:
+def promote_production_auto(store: Store, skill: str, sha: str, reason: str, gate: dict | None = None) -> dict:
     """Promoción AUTOMÁTICA a producción, SIN firma, SOLO para skills de bajo riesgo y SOLO
     cuando el operador la pre-autorizó (VUPPIA_AUTOAPPLY=1). Registra la versión anterior
     para el rollback. Lo crítico/arquitectura NO pasa por acá: eso siempre exige firma."""
@@ -332,6 +451,8 @@ def promote_production_auto(store: Store, skill: str, sha: str, reason: str) -> 
             db.execute("INSERT INTO skill_pointers VALUES(?,'production',?,?)", (skill, full, utc()))
         store._append_in_tx('promote_production_auto', {'skill': skill, 'sha': full, 'prev_sha': prev,
                                                         'reason': reason})
+    record_release(store, skill, 'production', 'promotion', prev, full, 'vuppia_auto',
+                   analysis=(gate or {}).get('first'), holdout=(gate or {}).get('holdout'), note=reason)
     return {'promoted_to_production': full, 'prev_sha': prev}
 
 
@@ -350,14 +471,20 @@ def auto_apply(store: Store, skill: str) -> dict:
     src = store.one('SELECT source FROM skill_versions WHERE skill=? AND sha=?', (skill, lab_sha))
     if not src:
         return {'skill': skill, 'status': 'fuente_no_encontrada'}
+    # No re-evaluar (ni re-registrar) un par candidato/vigente que ya fue rechazado.
+    inc_sha = prod_sha or sha256(seed_source(skill))
+    if store.one("SELECT 1 FROM skill_evals WHERE skill=? AND candidate_sha=? AND incumbent_sha=? AND "
+                 "decision='rejected' AND purpose IN ('candidate','holdout')", (skill, lab_sha, inc_sha)):
+        return {'skill': skill, 'status': 'ya_evaluado_sin_mejora'}
     try:
-        analysis = evaluate(store, skill, src[0], against='production')  # juez: lab vs PRODUCCION (o semilla si vacia)
+        gate = independent_gate(store, skill, src[0], against='production')
     except Exception as exc:                            # noqa: BLE001
         return {'skill': skill, 'status': 'eval_error', 'error': repr(exc)[:120]}
-    if not analysis.get('improved'):
-        return {'skill': skill, 'status': 'no_mejora', 'worst_regime_delta': analysis.get('worst_regime_delta')}
+    if not gate['passed']:
+        return {'skill': skill, 'status': 'no_mejora', 'motivo': gate.get('reason'),
+                'worst_regime_delta': gate['first'].get('worst_regime_delta')}
     try:
-        res = promote_production_auto(store, skill, lab_sha, reason='autoapply:mejora_verificada')
+        res = promote_production_auto(store, skill, lab_sha, reason='autoapply:mejora_verificada', gate=gate)
         return {'skill': skill, 'status': 'aplicado', **res}
     except Exception as exc:                            # noqa: BLE001
         return {'skill': skill, 'status': 'error', 'error': repr(exc)[:120]}
@@ -365,9 +492,15 @@ def auto_apply(store: Store, skill: str) -> dict:
 
 def _production_prev(store: Store, skill: str):
     """Versión de producción inmediatamente anterior a la actual, leída de la bitácora."""
-    rows = store.q("SELECT body FROM ledger WHERE kind='promote_production' ORDER BY seq DESC LIMIT 50")
     cur = store.one("SELECT sha FROM skill_pointers WHERE skill=? AND channel='production'", (skill,))
     cur_sha = cur[0] if cur else None
+    # Fuente de verdad: el registro de versiones (cubre firmadas y automáticas).
+    rel = store.one("SELECT prev_sha FROM skill_releases WHERE skill=? AND channel='production' AND "
+                    "kind='promotion' AND new_sha=? ORDER BY id DESC LIMIT 1", (skill, cur_sha))
+    if rel:
+        return rel[0]
+    rows = store.q("SELECT body FROM ledger WHERE kind IN ('promote_production','promote_production_auto') "
+                   "ORDER BY seq DESC LIMIT 50")
     for (body,) in rows:
         try:
             ev = json.loads(body)
@@ -382,6 +515,8 @@ def rollback_production(store: Store, skill: str, reason: str = 'manual') -> dic
     """Revierte producción a la versión anterior (o a la semilla si no hay anterior).
     Es una acción de SEGURIDAD: vuelve a una versión ya probada, por eso NO exige firma."""
     prev = _production_prev(store, skill)
+    _cur = store.one("SELECT sha FROM skill_pointers WHERE skill=? AND channel='production'", (skill,))
+    cur_sha = _cur[0] if _cur else None
     target = prev
     label = 'version anterior'
     if not target:
@@ -398,6 +533,8 @@ def rollback_production(store: Store, skill: str, reason: str = 'manual') -> dic
         else:
             db.execute("INSERT INTO skill_pointers VALUES(?,'production',?,?)", (skill, target, utc()))
         store._append_in_tx('rollback_production', {'skill': skill, 'to': target, 'reason': reason})
+    record_release(store, skill, 'production', 'rollback', cur_sha, target,
+                   'rollback_automatico' if reason.startswith('monitor') else 'rollback_operador', note=reason)
     return {'rolled_back_to': target, 'label': label, 'reason': reason}
 
 
@@ -412,11 +549,17 @@ def monitor_production(store: Store, skill: str) -> dict:
     if not src_row:
         return {'skill': skill, 'status': 'fuente_no_encontrada'}
     try:
-        analysis = evaluate(store, skill, src_row[0], against='seed')  # produccion vs SEMILLA (piso)
+        analysis = evaluate(store, skill, src_row[0], against='seed', record=False)  # vs SEMILLA (piso)
     except Exception as exc:                             # noqa: BLE001
         return {'skill': skill, 'status': 'eval_error', 'error': repr(exc)[:120]}
     worst = analysis.get('worst_regime_delta')
     regressed = (worst is not None and worst < -REGRESSION_TOL)
+    with store.tx() as db:
+        db.execute('INSERT INTO skill_checks(skill,sha,baseline_sha,at,kind,analysis,verdict) VALUES(?,?,?,?,?,?,?)',
+                   (skill, cur[0], analysis['incumbent_sha'], utc(), 'monitor',
+                    canonical({k: analysis.get(k) for k in ('candidate_mean', 'incumbent_mean',
+                                                            'worst_regime_delta', 'per_regime', 'seed_commit')}),
+                    'regresion' if regressed else 'ok'))
     out = {'skill': skill, 'prod_sha': cur[0][:12], 'worst_regime_delta': worst, 'regressed': regressed}
     if regressed:
         try:
@@ -478,6 +621,10 @@ def try_reference(store: Store, skill: str) -> dict:
         return {'skill': skill, 'status': 'error', 'error': repr(exc)[:160]}
 
 
+# Qué modelo escribió el último candidato (lo lee el motor para dejarlo registrado).
+LAST_GENERATOR: dict = {'model': None, 'call_id': None}
+
+
 def generate_candidate(store: Store, skill: str, proposer) -> str:
     import json
     spec = skill_spec(skill)
@@ -521,8 +668,12 @@ def generate_candidate(store: Store, skill: str, proposer) -> str:
         # Si el modelo fuerte está topado (cuota diaria) u otro error, caemos al del motor.
         if coder is not proposer:
             raw = proposer.complete(system, user, purpose='evolve_generate', max_tokens=1500, temperature=0.6)
+            coder = proposer
         else:
             raise
+    used = getattr(coder, 'last_used', None) or coder
+    LAST_GENERATOR['model'] = f"{getattr(used, 'name', '?')}:{getattr(used, 'model', '?')}"
+    LAST_GENERATOR['call_id'] = getattr(used, 'last_call_id', None)
     src = raw.strip()
     if src.startswith('```'):
         src = src.split('\n', 1)[1].rsplit('```', 1)[0]
