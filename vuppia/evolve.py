@@ -171,6 +171,13 @@ def _eval_on_regime(source: str, regime: str, seed: int, spec: dict) -> dict:
     return spec['grade'](scores, inst)
 
 
+def runtime_channel(store: Store, skill: str) -> str:
+    """Canal que debe usar el sistema EN MARCHA para una skill: producción si hay una versión
+    promovida; si no, lab. Sin esto, promover a producción era solo una etiqueta."""
+    row = store.one("SELECT 1 FROM skill_pointers WHERE skill=? AND channel='production'", (skill,))
+    return 'production' if row else 'lab'
+
+
 # Tolerancia de regresión en el peor régimen (la usan evaluate y monitor_production).
 REGRESSION_TOL = 0.005
 
