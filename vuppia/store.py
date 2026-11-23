@@ -128,6 +128,19 @@ MIGRATIONS = [
     CREATE TRIGGER conversations_ai AFTER INSERT ON conversations BEGIN
         INSERT INTO conversations_fts(rowid, content) VALUES (new.id, new.content); END;
     ''',
+    # registro de versiones incorporadas, chequeos de monitoreo aparte de las evaluaciones de
+    # candidatos, y quien genero cada version (auditoria del ciclo de automejora, 23/11).
+    '''
+    CREATE TABLE skill_releases (
+        id INTEGER PRIMARY KEY, skill TEXT NOT NULL, channel TEXT NOT NULL, kind TEXT NOT NULL,
+        prev_sha TEXT, new_sha TEXT NOT NULL, at TEXT NOT NULL, decided_by TEXT NOT NULL,
+        generator TEXT, eval_id INTEGER, holdout_eval_id INTEGER, metrics TEXT, diff TEXT, note TEXT);
+    CREATE TABLE skill_checks (
+        id INTEGER PRIMARY KEY, skill TEXT NOT NULL, sha TEXT NOT NULL, baseline_sha TEXT NOT NULL,
+        at TEXT NOT NULL, kind TEXT NOT NULL, analysis TEXT NOT NULL, verdict TEXT NOT NULL);
+    ALTER TABLE skill_versions ADD COLUMN generator TEXT;
+    ALTER TABLE skill_evals ADD COLUMN purpose TEXT;
+    ''',
 ]
 
 

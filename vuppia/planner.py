@@ -30,6 +30,9 @@ FIRST_LAW = {
 PROTOCOL_GOAL = {
     'introspection_probe': 'consciousness_investigation',
     'llm_self_prediction': 'consciousness_investigation',
+    # Monitoreo metacognitivo (indicador HOT-2): distinguir aciertos de errores propios.
+    'metacog_head': 'consciousness_investigation',
+    'confidence_error_detection': 'consciousness_investigation',
     'llm_verbal_confidence': 'self_improvement',
 }
 
