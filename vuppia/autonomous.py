@@ -60,7 +60,7 @@ def _chat_active(store: Store) -> bool:
         return False
 
 
-def _low_quota(store: Store, floor: int = 4000) -> bool:
+def _low_quota(store: Store, floor: int = 4000, model: str | None = None) -> bool:
     """True si la cuota de tokens/min del proveedor está por debajo del piso: el motor
     frena sus llamadas al modelo para dejarle margen al chat (tier gratis tiene poco)."""
     try:
@@ -72,6 +72,17 @@ def _low_quota(store: Store, floor: int = 4000) -> bool:
         rem = q.get('remaining_tokens')
         if rem is None:
             return False
+        # La cuota es POR MODELO y por minuto: una lectura de otro modelo (p. ej. el del chat)
+        # o de hace más de 90 s no dice nada de la cuota actual del motor. Sin esto, una lectura
+        # baja y vieja dejaba al motor frenado para siempre (nadie volvía a llamar y a refrescarla).
+        if model and q.get('model') and q.get('model') != model:
+            return False
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            if (_dt.now(_tz.utc) - _dt.fromisoformat(q.get('at'))).total_seconds() > 90:
+                return False
+        except Exception:                               # noqa: BLE001
+            pass
         return int(float(rem)) < floor
     except Exception:                                   # noqa: BLE001
         return False
@@ -209,7 +220,7 @@ def tick(store: Store, cfg: dict) -> dict:
         # por regla ya corrió arriba, así que el motor igual avanza sin tocar el LLM).
         did['actions'].append({'chat_priority': 'cedí la cuota del modelo al chat'})
     elif proposer and (not proposer.has_capacity() if getattr(proposer, 'name', '') == 'pool'
-                       else _low_quota(store)):
+                       else _low_quota(store, model=getattr(proposer, 'model', None))):
         # Queda poca cuota por minuto del proveedor: el motor sipea y deja aire para el chat.
         did['actions'].append({'quota_brake': 'poca cuota del modelo; salteo pasos de LLM este tick'})
     elif proposer and (_free or _budget_left(store) > 0.02):
