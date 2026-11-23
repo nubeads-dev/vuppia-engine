@@ -40,6 +40,83 @@ MAX_RESPONSE_BYTES = 200_000
 _POOL_FREE: set = set()
 
 
+# Keys y configuracion de modelos cargadas desde el PANEL (no desde el chat ni el codigo):
+# viven en archivos del volumen de datos que comparten worker y dashboard. Las variables de
+# entorno del servidor siguen funcionando; para la CONFIG el archivo manda (se cambia sin
+# redesplegar), para las KEYS manda el entorno y el archivo es el respaldo.
+_SECRET_NAMES = ('GROQ_API_KEY', 'GEMINI_API_KEY', 'CEREBRAS_API_KEY', 'OPENROUTER_API_KEY',
+                 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY')
+_CONFIG_NAMES = ('VUPPIA_CHAT', 'VUPPIA_PROPOSER', 'VUPPIA_POOL', 'VUPPIA_POOL_CHAT',
+                 'VUPPIA_POOL_PROPOSER', 'VUPPIA_FRONTIER', 'VUPPIA_DAILY_BUDGET_USD',
+                 'VUPPIA_MONTHLY_BUDGET_USD', 'VUPPIA_PER_CALL_CAP_USD')
+# Techos duros de presupuesto cuando viene del panel (no se pueden subir desde ahi).
+_BUDGET_CEIL = {'VUPPIA_DAILY_BUDGET_USD': 2.0, 'VUPPIA_MONTHLY_BUDGET_USD': 30.0,
+                'VUPPIA_PER_CALL_CAP_USD': 0.5}
+_FILE_CACHE: dict = {}
+
+
+def data_dir() -> str:
+    d = os.getenv('VUPPIA_DATA_DIR')
+    if d:
+        return d
+    for d in ('/data', '/app/data'):
+        if os.path.isdir(d):
+            return d
+    return '.'
+
+
+def _read_file(name: str) -> dict:
+    path = os.path.join(data_dir(), name)
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return {}
+    hit = _FILE_CACHE.get(path)
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        with open(path, encoding='utf-8') as f:
+            val = json.load(f)
+        val = val if isinstance(val, dict) else {}
+    except Exception:                                   # noqa: BLE001
+        val = {}
+    _FILE_CACHE[path] = (mt, val)
+    return val
+
+
+def write_file(name: str, updates: dict) -> None:
+    """Mezcla `updates` en el archivo (valor vacio/None borra la entrada). Permisos 600."""
+    path = os.path.join(data_dir(), name)
+    cur = dict(_read_file(name))
+    for k, v in updates.items():
+        if v in (None, ''):
+            cur.pop(k, None)
+        else:
+            cur[k] = v
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(cur, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    _FILE_CACHE.pop(path, None)
+
+
+def secret(name: str) -> str | None:
+    return os.getenv(name) or _read_file('secrets.json').get(name) or None
+
+
+def cfg(name: str) -> str | None:
+    v = _read_file('llm_config.json').get(name)
+    if v not in (None, ''):
+        if name in _BUDGET_CEIL:
+            try:
+                return str(max(0.0, min(float(v), _BUDGET_CEIL[name])))
+            except Exception:                           # noqa: BLE001
+                return os.getenv(name)
+        return str(v)
+    return os.getenv(name)
+
+
 class ProviderError(RuntimeError):
     pass
 
@@ -61,15 +138,15 @@ def price(model: str) -> tuple[float, float]:
 
 
 def daily_budget() -> float:
-    return float(os.getenv('VUPPIA_DAILY_BUDGET_USD', '1.00'))
+    return float(cfg('VUPPIA_DAILY_BUDGET_USD') or '1.00')
 
 
 def monthly_budget() -> float:
-    return float(os.getenv('VUPPIA_MONTHLY_BUDGET_USD', '10.00'))
+    return float(cfg('VUPPIA_MONTHLY_BUDGET_USD') or '10.00')
 
 
 def per_call_cap() -> float:
-    return float(os.getenv('VUPPIA_PER_CALL_CAP_USD', '0.25'))
+    return float(cfg('VUPPIA_PER_CALL_CAP_USD') or '0.25')
 
 
 class Provider:
@@ -226,7 +303,7 @@ class Anthropic(Provider):
     name = 'anthropic'
 
     def _call(self, system, user, max_tokens, temperature):
-        key = os.getenv('ANTHROPIC_API_KEY')
+        key = secret('ANTHROPIC_API_KEY')
         if not key:
             raise ProviderError('Falta ANTHROPIC_API_KEY')
         body = {'model': self.model, 'max_tokens': max_tokens, 'system': system,
@@ -245,7 +322,7 @@ class OpenAI(Provider):
     name = 'openai'
 
     def _call(self, system, user, max_tokens, temperature):
-        key = os.getenv('OPENAI_API_KEY')
+        key = secret('OPENAI_API_KEY')
         if not key:
             raise ProviderError('Falta OPENAI_API_KEY')
         body = {'model': self.model, 'max_completion_tokens': max_tokens,
@@ -279,7 +356,7 @@ class _OAICompat(Provider):
     EXTRA_HEADERS: dict = {}
 
     def _call(self, system, user, max_tokens, temperature):
-        key = os.getenv(self.KEY_ENV)
+        key = secret(self.KEY_ENV)
         if not key:
             raise ProviderError(f'Falta {self.KEY_ENV}')
         body = {'model': self.model, 'max_tokens': max_tokens,
@@ -393,12 +470,12 @@ class Pool(Provider):
 def _pool_from_env(store: Store, role: str):
     """VUPPIA_POOL_<ROLE> (o VUPPIA_POOL): lista 'proveedor:modelo,proveedor:modelo,...' en
     orden de preferencia. Se saltean los proveedores cuya key no esta cargada en el servidor."""
-    spec = os.getenv('VUPPIA_POOL_' + role.upper()) or os.getenv('VUPPIA_POOL') or ''
+    spec = cfg('VUPPIA_POOL_' + role.upper()) or cfg('VUPPIA_POOL') or ''
     members = []
     for item in spec.split(','):
         prov, _, model = item.strip().partition(':')
         cls = _CLASSES.get(prov)
-        if not cls or not model or not os.getenv(_KEY_ENV.get(prov, '')):
+        if not cls or not model or not secret(_KEY_ENV.get(prov, '')):
             continue
         _POOL_FREE.add(model)
         members.append(cls(store, model))
@@ -408,7 +485,7 @@ def _pool_from_env(store: Store, role: str):
 def from_env(store: Store, role: str) -> Provider | None:
     """role: proposer | reviewer | subject | chat | frontier. Ej.: VUPPIA_PROPOSER=groq:openai/gpt-oss-20b
     o VUPPIA_PROPOSER=pool (usa VUPPIA_POOL_PROPOSER / VUPPIA_POOL)."""
-    spec = os.getenv('VUPPIA_' + role.upper())
+    spec = cfg('VUPPIA_' + role.upper())
     if not spec:
         return None
     if spec.strip() == 'pool':

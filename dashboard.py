@@ -610,21 +610,36 @@ def admin_action(action, tok, args=None):
             except Exception:
                 pass
 
-    if action == 'llm_config':
-        # Diagnostico SIN secretos: que variables estan cargadas (si/no), la config del pool y
-        # las ultimas llamadas a modelos. Nunca devuelve el valor de una key.
+    # --- Modelos: keys (solo escritura, nunca se devuelven) y configuracion del pool ---
+    if action in ('llm_config', 'set_key', 'set_llm_config'):
         st = None
         try:
+            import sys as _sys
+            if '/app' not in _sys.path:
+                _sys.path.insert(0, '/app')
+            from vuppia import providers as _pv
+            if action == 'set_key':
+                name = str(args.get('name', '')); val = str(args.get('value', '') or '').strip()
+                if name not in _pv._SECRET_NAMES:
+                    return {'ok': False, 'error': 'nombre de key no permitido'}
+                if val and not (10 <= len(val) <= 400) or any(c.isspace() for c in val):
+                    return {'ok': False, 'error': 'la key no tiene un formato valido'}
+                _pv.write_file('secrets.json', {name: val})
+                return {'ok': True, 'name': name, 'cargada': bool(val)}
+            if action == 'set_llm_config':
+                upd = {k: (str(v).strip() if v is not None else '') for k, v in args.items()
+                       if k in _pv._CONFIG_NAMES}
+                if not upd:
+                    return {'ok': False, 'error': 'nada para guardar'}
+                _pv.write_file('llm_config.json', upd)
             st, _ = _admin_store()
-            keys = {k: bool(_os.getenv(k)) for k in ('GROQ_API_KEY', 'GEMINI_API_KEY', 'CEREBRAS_API_KEY',
-                                                     'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY')}
-            cfg = {k: (_os.getenv(k) or None) for k in ('VUPPIA_CHAT', 'VUPPIA_PROPOSER', 'VUPPIA_SUBJECT',
-                                                        'VUPPIA_POOL', 'VUPPIA_POOL_CHAT', 'VUPPIA_POOL_PROPOSER',
-                                                        'VUPPIA_FRONTIER', 'VUPPIA_DAILY_BUDGET_USD',
-                                                        'VUPPIA_MONTHLY_BUDGET_USD', 'VUPPIA_PER_CALL_CAP_USD')}
-            rows = st.db.execute('SELECT at,provider,model,purpose,status,substr(COALESCE(error,\'\'),1,90),'
+            keys = {k: bool(_pv.secret(k)) for k in _pv._SECRET_NAMES if k != 'OPENAI_API_KEY'}
+            cfgv = {k: _pv.cfg(k) for k in _pv._CONFIG_NAMES}
+            rows = st.db.execute("SELECT at,provider,model,purpose,status,substr(COALESCE(error,''),1,90),"
                                  'cost_usd FROM llm_calls ORDER BY id DESC LIMIT 12').fetchall()
-            return {'ok': True, 'donde': 'dashboard', 'keys_cargadas': keys, 'config': cfg,
+            mes = st.db.execute("SELECT COALESCE(SUM(COALESCE(cost_usd,reserved_usd)),0) FROM llm_calls "
+                                "WHERE substr(day,1,7)=substr(date('now'),1,7)").fetchone()[0]
+            return {'ok': True, 'keys_cargadas': keys, 'config': cfgv, 'gasto_mes_usd': round(mes or 0, 4),
                     'ultimas_llamadas': [list(r) for r in rows]}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
@@ -1324,6 +1339,27 @@ button.g{background:#241a33;border-color:#4a3570;color:#c4a9ff}
 
   <div class="card">
     <div class="row" style="justify-content:space-between">
+      <b>Modelos y keys</b>
+      <span id="llmstate" class="tag"></span>
+    </div>
+    <div id="llmkeys" style="margin-top:6px"><div class="mut">Cargando…</div></div>
+    <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">
+      <select id="keyname">
+        <option value="GEMINI_API_KEY">Gemini (gratis)</option>
+        <option value="CEREBRAS_API_KEY">Cerebras (gratis)</option>
+        <option value="OPENROUTER_API_KEY">OpenRouter (gratis)</option>
+        <option value="ANTHROPIC_API_KEY">Claude API (pago, con tope)</option>
+        <option value="GROQ_API_KEY">Groq (gratis)</option>
+      </select>
+      <input id="keyval" type="password" autocomplete="off" placeholder="Pegá la key acá" style="flex:1;min-width:180px">
+      <button onclick="saveKey()">Guardar key</button>
+    </div>
+    <div id="keymsg" class="mut" style="margin-top:6px"></div>
+    <div class="note">La key se guarda en tu servidor y <b>nunca se vuelve a mostrar</b>: el panel solo dice si está cargada. Guardar con el campo vacío la borra. El gasto del carril pago tiene tope diario y mensual.</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
       <b>Qué corre en producción</b>
       <span id="rbstate" class="tag"></span>
     </div>
@@ -1395,8 +1431,33 @@ function refresh(){
   loadAgenda();
   loadEvo();
   loadProd();
+  loadLLM();
 }
 function fnum(x){return (x==null)?'–':Number(x).toFixed(4)}
+function loadLLM(){
+  api('llm_config').then(function(d){
+    var el=document.getElementById('llmkeys');
+    if(!d.ok){el.innerHTML='<div class="mut">'+esc(d.error||'sin datos')+'</div>';return}
+    var h='';
+    Object.keys(d.keys_cargadas).forEach(function(k){
+      h+='<div class="row" style="justify-content:space-between"><span>'+esc(k)+'</span><span class="tag">'+(d.keys_cargadas[k]?'✓ cargada':'— falta')+'</span></div>';
+    });
+    var c=d.config||{};
+    h+='<div class="mut" style="margin-top:6px">Chat: '+esc(c.VUPPIA_CHAT||'-')+' · Motor: '+esc(c.VUPPIA_PROPOSER||'-')+'</div>';
+    h+='<div class="mut">Pool: '+esc(c.VUPPIA_POOL||'(sin configurar)')+'</div>';
+    h+='<div class="mut">Carril pago: '+esc(c.VUPPIA_FRONTIER||'(apagado)')+' · tope '+esc(c.VUPPIA_DAILY_BUDGET_USD||'0')+' USD/día, '+esc(c.VUPPIA_MONTHLY_BUDGET_USD||'0')+' USD/mes</div>';
+    el.innerHTML=h;
+    document.getElementById('llmstate').textContent='gasto del mes: '+d.gasto_mes_usd+' USD';
+  });
+}
+function saveKey(){
+  var n=document.getElementById('keyname').value, inp=document.getElementById('keyval'), msg=document.getElementById('keymsg');
+  api('set_key',{name:n,value:inp.value.trim()}).then(function(d){
+    inp.value='';
+    msg.textContent=d.ok?(d.cargada?'✓ '+n+' guardada.':n+' borrada.'):(d.error||'no se pudo guardar');
+    loadLLM();
+  });
+}
 function loadEvo(){
   api('evo_list').then(function(d){
     var box=document.getElementById('evo');
