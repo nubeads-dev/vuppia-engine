@@ -610,6 +610,30 @@ def admin_action(action, tok, args=None):
             except Exception:
                 pass
 
+    if action == 'llm_config':
+        # Diagnostico SIN secretos: que variables estan cargadas (si/no), la config del pool y
+        # las ultimas llamadas a modelos. Nunca devuelve el valor de una key.
+        st = None
+        try:
+            st, _ = _admin_store()
+            keys = {k: bool(_os.getenv(k)) for k in ('GROQ_API_KEY', 'GEMINI_API_KEY', 'CEREBRAS_API_KEY',
+                                                     'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY')}
+            cfg = {k: (_os.getenv(k) or None) for k in ('VUPPIA_CHAT', 'VUPPIA_PROPOSER', 'VUPPIA_SUBJECT',
+                                                        'VUPPIA_POOL', 'VUPPIA_POOL_CHAT', 'VUPPIA_POOL_PROPOSER',
+                                                        'VUPPIA_FRONTIER', 'VUPPIA_DAILY_BUDGET_USD',
+                                                        'VUPPIA_MONTHLY_BUDGET_USD', 'VUPPIA_PER_CALL_CAP_USD')}
+            rows = st.db.execute('SELECT at,provider,model,purpose,status,substr(COALESCE(error,\'\'),1,90),'
+                                 'cost_usd FROM llm_calls ORDER BY id DESC LIMIT 12').fetchall()
+            return {'ok': True, 'donde': 'dashboard', 'keys_cargadas': keys, 'config': cfg,
+                    'ultimas_llamadas': [list(r) for r in rows]}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+        finally:
+            try:
+                st.db.close()
+            except Exception:
+                pass
+
     if action == 'last_tick':
         st = None
         try:
