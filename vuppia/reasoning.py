@@ -216,13 +216,27 @@ def deliberate(provider, system, user, question, *, fallback=None, generate, for
     generate(provider, system, user, chunk=...) es la generación base del chat
     (_answer_in_chunks): mantiene el troceado por minuto, el presupuesto y la cuota.
     """
+    # Carril FRONTERA (VUPPIA_FRONTIER, pago, con tope diario/mensual en USD): se usa para las
+    # preguntas difíciles y como ÚLTIMO respaldo cuando todos los modelos gratis están sin cuota.
+    frontier = None
+    try:
+        from . import providers
+        frontier = providers.from_env(provider.store, 'frontier')
+    except Exception:                                   # noqa: BLE001
+        frontier = None
+
     def g(sys_, usr_, chunk=3500):
         try:
             return generate(provider, sys_, usr_, chunk=chunk)
         except Exception:                               # noqa: BLE001
-            if fallback is not None and getattr(fallback, 'model', None) != getattr(provider, 'model', None):
-                return generate(fallback, sys_, usr_, chunk=chunk)
-            raise
+            try:
+                if fallback is not None and getattr(fallback, 'model', None) != getattr(provider, 'model', None):
+                    return generate(fallback, sys_, usr_, chunk=chunk)
+                raise
+            except Exception:                           # noqa: BLE001
+                if frontier is not None:
+                    return generate(frontier, sys_, usr_, chunk=min(chunk, 1500))
+                raise
 
     # 3) Calculo exacto: si hay aritmetica, la resolvemos nosotros y se la damos verificada
     #    al modelo para que no la invente (ancla de honestidad, ademas de precision).
@@ -246,14 +260,11 @@ def deliberate(provider, system, user, question, *, fallback=None, generate, for
     # 0) Carril FRONTERA (VUPPIA_FRONTIER=proveedor:modelo, pago, con tope en USD): si esta
     #    configurado y hay presupuesto, la pregunta dificil la responde el modelo frontera y no
     #    se gasta en el verificador. Sin key o sin presupuesto, cae al camino gratis de abajo.
-    if not force_hard:
+    if not force_hard and frontier is not None:
         try:
-            from . import providers
-            frontier = providers.from_env(provider.store, 'frontier')
-            if frontier is not None:
-                out = generate(frontier, sys_main, user)
-                if (out or '').strip():
-                    return out
+            out = generate(frontier, sys_main, user)
+            if (out or '').strip():
+                return out
         except Exception:                               # noqa: BLE001
             pass
 

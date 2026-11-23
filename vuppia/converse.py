@@ -215,6 +215,18 @@ def ask(store: Store, question: str, *, provider=None, verifier=None, online=Fal
         answer = _self_improve_report(store)
     elif intent == 'identity':
         answer = _identity_answer(store, state)
+    elif intent == 'smalltalk':
+        # Saludos y cortesías: respuesta directa, sin modelo ni volcado de estado.
+        t = question.lower()
+        act = state.get('agenda_activa') or []
+        if re.search(r'\bgracias\b', t):
+            answer = 'De nada. Cuando quieras seguimos.'
+        elif re.search(r'\b(chau|adi[oó]s)\b', t):
+            answer = 'Hasta luego. Mi motor sigue investigando mientras tanto.'
+        else:
+            answer = ('Hola, soy VUPPIA SOFÍA. ' +
+                      (f'Ahora estoy investigando: {(act[0].get("topic") or "")[:80]}. ' if act else '') +
+                      'Podés preguntarme por mi misión, por mi estado, o pedirme que investigue un tema.')
     elif intent == 'cmd_research':
         # El chat sale EN VIVO a internet (fuentes científicas, solo lectura) y responde con
         # fuentes; si la búsqueda en vivo falla, encola el tema para el motor autónomo.
@@ -439,7 +451,7 @@ def _answer_status(store, question, intent, state, provider, refs, fallback=None
     except Exception:                                 # noqa: BLE001
         rel = []
     if provider is not None:
-        return _llm_grounded(provider, question, state, rel, fallback)
+        return _llm_grounded(provider, question, state, rel, fallback, brief_fail=(intent == 'general'))
     return _structured_answer(intent, state)
 
 
@@ -504,7 +516,8 @@ def answer_once(store, question, provider, *, fallback=None, use_layer=True, for
                          use_layer=use_layer, force_hard=force_hard)
 
 
-def _llm_grounded(provider, question, state, rel, fallback=None, *, use_layer=True, force_hard=False) -> str:
+def _llm_grounded(provider, question, state, rel, fallback=None, *, use_layer=True, force_hard=False,
+                  brief_fail=False) -> str:
     system = (
         'Sos VUPPIA SOFÍA: un sistema de investigación científica autónomo y permanente. Tu misión es '
         'investigar la naturaleza de la inteligencia y la conciencia: estudiar las teorías científicas '
@@ -565,6 +578,11 @@ def _llm_grounded(provider, question, state, rel, fallback=None, *, use_layer=Tr
     except Exception as exc:                          # noqa: BLE001
         # Si el modelo principal está topado (p. ej. 429 por límite diario) y el fallback
         # también falla, caemos a la respuesta estructurada desde el estado real.
+        if brief_fail:
+            # Pregunta general sin ningún modelo disponible: decirlo, no volcar el estado.
+            return ('No pude usar ningún modelo en este momento (' + str(exc)[:60] + '), así que no puedo '
+                    'responderte eso ahora. Sí puedo contarte mi misión o mi estado, que no dependen del modelo; '
+                    'o probá de nuevo en unos minutos.')
         return _structured_answer('status', state) + f'\n(No pude usar el modelo: {str(exc)[:80]})'
 
 
